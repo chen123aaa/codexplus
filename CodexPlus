@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+NODE="/Applications/Codex.app/Contents/Resources/node"
+
+if [ ! -x "$NODE" ]; then
+  NODE="$(command -v node || true)"
+fi
+
+if [ -z "$NODE" ] || [ ! -x "$NODE" ]; then
+  exit 1
+fi
+
+exec "$NODE" "$APP_DIR/Resources/unlocker.mjs" start-service

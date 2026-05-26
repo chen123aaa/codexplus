@@ -3,22 +3,20 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleDisplayName</key>
-  <string>CodexPlus</string>
+  <string>Codex Config Importer</string>
   <key>CFBundleExecutable</key>
-  <string>CodexPlus</string>
+  <string>CodexConfigImporter</string>
   <key>CFBundleIdentifier</key>
-  <string>local.codexplus.unlocker</string>
+  <string>local.codex.config-importer</string>
   <key>CFBundleName</key>
-  <string>CodexPlus</string>
+  <string>Codex Config Importer</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.4.0</string>
+  <string>0.1.0</string>
   <key>CFBundleVersion</key>
-  <string>0.4.0</string>
+  <string>0.1.0</string>
   <key>LSMinimumSystemVersion</key>
   <string>12.0</string>
-  <key>LSUIElement</key>
-  <true/>
 </dict>
 </plist>

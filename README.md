@@ -1,162 +1,146 @@
 # codexplus
 
-一个只服务 Codex 的轻量工具。
+`codexplus` 现在拆成了两个独立工具：
 
-它不做代理，不做管理面板，不做一堆和日常使用关系不大的功能。目标很直接：把真正常用、又确实能省事的能力单独拎出来，做成一个打开就能用的小工具。
+- `CodexPlus`
+  - 无界面插件解锁器
+  - 只负责启动 Codex、开启 `goals`、解锁插件入口
+- `Codex Config Importer`
+  - 独立配置导入器
+  - 只负责表单生成配置并写入 `~/.codex/config.toml` / `~/.codex/auth.json`
+
+这样拆开之后，插件解锁器不再和配置导入器耦合，权限链也更干净。
 
 ## 致谢
 
-这个项目的思路和早期实现，参考了开源项目 [CodexPlusPlus](https://github.com/BigPizzaV3/CodexPlusPlus)。
+这个项目的思路和早期实现参考了开源项目 [CodexPlusPlus](https://github.com/BigPizzaV3/CodexPlusPlus)。
 
-先说结论：这个项目给了我不少启发，我也确实从里面提取了一些我觉得有用的部分，尤其是围绕 Codex 插件能力、调试入口和一些可行的增强方式。
+我从里面提取了一些真正有用的部分，尤其是围绕 Codex 插件能力、调试入口和增强方式的思路。也正是因为长期实际使用，才慢慢把它收成了现在这种更轻的形态。
 
-也正因为实际用了很久，才有了现在这个轻量版。
+## 为什么这样拆
 
-## 为什么重新做一个轻量版
+一开始我把启动器和配置导入都塞进了一个 app 里，后面发现问题很明显：
 
-我自己在使用 `CodexPlusPlus` 的过程中，最明显的感受就是它启动偏慢。
+- 启动器做成独立 GUI app 之后，更容易碰到 macOS 权限和宿主上下文问题
+- 配置导入本来就是另一类需求，没必要和插件解锁绑死
+- 两种功能放一起，维护和排错都容易互相影响
 
-尤其是每次重启 Codex 之后，从打开到真正进入聊天界面，中间会卡很久。这个问题我没有完全定位清楚，可能和它接管的能力比较多、初始化链路比较长有关，但至少从体验上说，这件事非常影响日常使用。
+所以现在改成：
 
-后来我想过要不要继续往原来的方向修，想了一圈之后，决定不再往“大而全”的方向堆，而是换个思路：
+- `CodexPlus` 回退到第一版那种无界面脚本模式
+- `Codex Config Importer` 单独做成一个独立 app
 
-- 只保留最有用的功能
-- 只服务 Codex
-- 能直接运行就直接运行
-- 不折腾额外代理、证书、后台网络服务
+## CodexPlus
 
-所以就有了 `codexplus`。
+### 作用
 
-## 这个项目现在在做什么
+`CodexPlus` 现在只做这些事：
 
-`codexplus` 目前把功能收在一个原生 macOS 小界面里，只有两个页签：
-
-- `启动器`
-- `配置导入`
-
-它现在已经实现的功能有：
-
-- 启动 Codex
-- 保持 Codex 插件入口可用
+- 以带调试端口的方式启动 Codex
+- 解锁插件入口和插件安装按钮
 - 开启 `goals` 目标模式
-- 提供一个轻量的 `Codex Config Importer`
-- 用表单填写 Provider / Profile 参数
-- 自动生成 `model_providers` 和 `profiles` 配置片段
-- 一键 merge 到 `~/.codex/config.toml`
-- 导入前自动备份旧配置
-- 支持 JSON 导出 / 导入，方便备份和迁移
+- 尽量保持本地线程视图优先
 
-## 配置导入支持字段
+它不会再承担配置导入功能。
 
-目前表单支持这些字段：
-
-- `provider_id`
-- `provider name`
-- `base_url`
-- `api_key env`
-- `model`
-- `profile_id`
-- `model_reasoning_effort`
-- 可选 `http_headers`
-
-生成出来的配置大致是这样：
-
-```toml
-[model_providers.openrouter]
-name = "OpenRouter"
-base_url = "https://openrouter.ai/api/v1"
-env_key = "OPENROUTER_API_KEY"
-wire_api = "responses"
-
-[profiles.openrouter_gpt5]
-model_provider = "openrouter"
-model = "gpt-5.4"
-model_reasoning_effort = "high"
-```
-
-导入时会先备份旧配置到：
-
-```text
-~/.codexplus/backups/
-```
-
-## 和 CodexPlusPlus 的区别
-
-这不是 `CodexPlusPlus` 的替代壳，也不是换皮版。
-
-我想做的是一个更小、更稳、更好维护的工具，所以一开始就把边界定得很死：
-
-- 不做代理
-- 不改证书
-- 不做大而全的管理工具
-- 不依赖复杂的后台常驻逻辑
-- 不去碰一堆现在 Codex 官方新版已经逐步适配掉的功能
-
-说白了，很多以前要靠管理工具去补的东西，Codex 新版自己已经在补了。既然这样，就没必要继续把工具做得越来越重。
-
-`codexplus` 只把现在还真正有价值、而且我自己每天确实在用的东西留下来。
-
-## 兼容性和更新方式
-
-这个项目会尽量跟着最新版 Codex 去适配。
-
-思路不是让你在什么管理工具里反复更新一堆组件，而是尽量把东西收在这个项目本身里。正常情况下，只需要下载新的 `CodexPlus` 版本，安装后直接运行就行，不需要再去管理工具里单独折腾更新。
-
-当然，Codex 官方如果后面改了内部结构，这边也会继续跟着调整。
-
-## 安装
+### 安装
 
 ```bash
 ./install-macos.sh
 ```
 
-安装完成后，打开：
+安装后得到：
 
 ```text
 /Applications/CodexPlus.app
 ```
 
-第一次安装会调用系统自带 `swiftc` 编译原生 macOS 界面，所以本机需要安装 Xcode Command Line Tools。
+这是一个无界面 app。打开后不会出现窗口，只会执行解锁流程。
 
-## 使用
+### 使用
 
-### 1. 启动器
-
-如果你只是想正常打开 Codex，并保持插件入口和目标模式可用，直接打开 `CodexPlus.app`，在 `启动器` 页签点击：
+直接打开：
 
 ```text
-启动并解锁 Codex
+/Applications/CodexPlus.app
 ```
 
-### 2. 配置导入
+它会完成一次性启动和注入，然后自行退出，不长期驻留。
 
-如果你想省掉手改 `~/.codex/config.toml` 的过程，就切到 `配置导入`：
-
-1. 填 Provider 参数
-2. 填 Profile 参数
-3. 先点 `校验配置`
-4. 确认没问题后点 `导入到 Codex`
-
-更适合新开一个 Codex 会话之后生效，不保证无缝切到当前已经在运行的会话。
-
-## 日志
-
-运行日志在这里：
+### 日志
 
 ```text
 ~/.codexplus/unlocker.log
+```
+
+## Codex Config Importer
+
+### 作用
+
+这是单独的配置导入器，和插件解锁器完全分离。
+
+它支持：
+
+- 填写 `provider_id`
+- 填写 `provider name`
+- 填写 `base_url`
+- 选择认证模式
+  - `Desktop auth.json`
+  - `Env Key`
+- 填写 `API Key` 或 `API Key Env`
+- 填写 `model`
+- 填写 `profile_id`
+- 填写 `model_reasoning_effort`
+- 可选 `http_headers`
+- 校验配置
+- 导入配置
+- 导出 / 导入 JSON
+
+### 安装
+
+```bash
+./install-config-importer.sh
+```
+
+安装后得到：
+
+```text
+/Applications/Codex Config Importer.app
+```
+
+### 导入逻辑
+
+默认推荐 `Desktop auth.json` 模式：
+
+- `config.toml` 写 `model_providers` / `profiles` / `base_url`
+- `auth.json` 写 API Key
+
+高级模式 `Env Key`：
+
+- `config.toml` 只写 `env_key`
+- 真正密钥值由系统环境变量提供
+
+导入前会自动备份到：
+
+```text
+~/.codexplus/backups/
 ```
 
 ## 卸载
 
 ```bash
 rm -rf "/Applications/CodexPlus.app"
+rm -rf "/Applications/Codex Config Importer.app"
 rm -rf "/Applications/Codex 插件解锁.app"
 rm -rf ~/.codexplus
 ```
 
+## 说明
+
+- `CodexPlus` 不改 `/Applications/Codex.app`
+- 不做代理，不改证书，不挂额外网络服务
+- 配置导入更适合新开一个 Codex 会话后生效
+
 ## 后续
 
-后面会继续更新，但还是同一个原则：
-
-只做最有用的功能，只服务 Codex，不往臃肿的方向走。
+后面仍然只做最有用的功能，只服务 Codex，不往臃肿方向走。
