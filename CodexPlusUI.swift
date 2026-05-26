@@ -60,14 +60,14 @@ final class CodexConfigImporterApp: NSObject, NSApplicationDelegate {
 
   private func buildWindow() {
     window = NSWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 760, height: 620),
+      contentRect: NSRect(x: 0, y: 0, width: 920, height: 680),
       styleMask: [.titled, .closable, .miniaturizable, .resizable],
       backing: .buffered,
       defer: false
     )
     window.center()
     window.title = "Codex Config Importer"
-    window.minSize = NSSize(width: 760, height: 620)
+    window.minSize = NSSize(width: 860, height: 640)
 
     let contentView = NSView(frame: window.contentRect(forFrameRect: window.frame))
     contentView.wantsLayer = true
@@ -78,16 +78,19 @@ final class CodexConfigImporterApp: NSObject, NSApplicationDelegate {
     card.translatesAutoresizingMaskIntoConstraints = false
     card.wantsLayer = true
     card.layer?.backgroundColor = NSColor.white.cgColor
-    card.layer?.cornerRadius = 12
+    card.layer?.cornerRadius = 8
     card.layer?.borderWidth = 1
     card.layer?.borderColor = NSColor(calibratedRed: 0.84, green: 0.80, blue: 0.70, alpha: 1).cgColor
     contentView.addSubview(card)
 
     titleLabel.font = NSFont.systemFont(ofSize: 26, weight: .semibold)
+    titleLabel.alignment = .left
     subtitleLabel.font = NSFont.systemFont(ofSize: 13, weight: .regular)
     subtitleLabel.textColor = NSColor(calibratedWhite: 0.30, alpha: 1)
     subtitleLabel.maximumNumberOfLines = 2
+    subtitleLabel.alignment = .left
     statusLabel.font = NSFont.systemFont(ofSize: 14, weight: .medium)
+    statusLabel.alignment = .left
     previewTextView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
     previewTextView.textColor = NSColor(calibratedWhite: 0.30, alpha: 1)
     previewTextView.isEditable = false
@@ -100,6 +103,8 @@ final class CodexConfigImporterApp: NSObject, NSApplicationDelegate {
     [providerIdField, providerNameField, baseUrlField, apiKeyValueField, apiKeyEnvField, profileIdField, modelField, reasoningField].forEach {
       $0.font = NSFont.systemFont(ofSize: 13)
       $0.translatesAutoresizingMaskIntoConstraints = false
+      $0.heightAnchor.constraint(equalToConstant: 24).isActive = true
+      $0.widthAnchor.constraint(greaterThanOrEqualToConstant: 560).isActive = true
     }
     headersTextView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
 
@@ -121,12 +126,21 @@ final class CodexConfigImporterApp: NSObject, NSApplicationDelegate {
     grid.yPlacement = .fill
     grid.xPlacement = .fill
     grid.column(at: 0).xPlacement = .trailing
+    grid.column(at: 0).width = 128
 
     [validateButton, importButton, exportButton, importJsonButton, quitButton].forEach { button in
       button.bezelStyle = .rounded
       button.font = NSFont.systemFont(ofSize: 13, weight: .medium)
       button.translatesAutoresizingMaskIntoConstraints = false
+      button.heightAnchor.constraint(equalToConstant: 30).isActive = true
+      button.widthAnchor.constraint(greaterThanOrEqualToConstant: 96).isActive = true
+      button.setButtonType(.momentaryPushIn)
     }
+    validateButton.setAccessibilityTitle("校验配置")
+    importButton.setAccessibilityTitle("导入到 Codex")
+    exportButton.setAccessibilityTitle("导出 JSON")
+    importJsonButton.setAccessibilityTitle("导入 JSON")
+    quitButton.setAccessibilityTitle("退出")
     importButton.contentTintColor = NSColor.white
     importButton.bezelColor = NSColor(calibratedRed: 0.10, green: 0.49, blue: 0.38, alpha: 1)
 
@@ -144,6 +158,7 @@ final class CodexConfigImporterApp: NSObject, NSApplicationDelegate {
     let buttonRow = NSStackView(views: [validateButton, importButton, exportButton, importJsonButton, quitButton])
     buttonRow.orientation = .horizontal
     buttonRow.spacing = 10
+    buttonRow.distribution = .fillEqually
     buttonRow.translatesAutoresizingMaskIntoConstraints = false
 
     let previewScroll = NSScrollView()
@@ -155,7 +170,7 @@ final class CodexConfigImporterApp: NSObject, NSApplicationDelegate {
     previewTextView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
     previewTextView.isVerticallyResizable = true
     previewTextView.autoresizingMask = [.width]
-    previewScroll.heightAnchor.constraint(equalToConstant: 180).isActive = true
+    previewScroll.heightAnchor.constraint(equalToConstant: 150).isActive = true
 
     let stack = NSStackView(views: [titleLabel, subtitleLabel, grid, buttonRow, statusLabel, previewScroll])
     stack.translatesAutoresizingMaskIntoConstraints = false
@@ -174,6 +189,12 @@ final class CodexConfigImporterApp: NSObject, NSApplicationDelegate {
       stack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -22),
       stack.topAnchor.constraint(equalTo: card.topAnchor, constant: 22),
       stack.bottomAnchor.constraint(lessThanOrEqualTo: card.bottomAnchor, constant: -22),
+      grid.leadingAnchor.constraint(equalTo: stack.leadingAnchor),
+      grid.trailingAnchor.constraint(equalTo: stack.trailingAnchor),
+      buttonRow.leadingAnchor.constraint(equalTo: stack.leadingAnchor),
+      buttonRow.trailingAnchor.constraint(lessThanOrEqualTo: stack.trailingAnchor),
+      previewScroll.leadingAnchor.constraint(equalTo: stack.leadingAnchor),
+      previewScroll.trailingAnchor.constraint(equalTo: stack.trailingAnchor),
     ])
 
     window.makeKeyAndOrderFront(nil)
@@ -198,7 +219,7 @@ final class CodexConfigImporterApp: NSObject, NSApplicationDelegate {
     headersTextView.isVerticallyResizable = true
     headersTextView.autoresizingMask = [.width]
     scroll.heightAnchor.constraint(equalToConstant: 96).isActive = true
-    scroll.widthAnchor.constraint(equalToConstant: 470).isActive = true
+    scroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 560).isActive = true
     return scroll
   }
 
