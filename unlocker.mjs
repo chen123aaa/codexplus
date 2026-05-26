@@ -8,9 +8,12 @@ const debugPort = Number(process.env.CODEX_PLUGIN_UNLOCK_PORT || "9229");
 const codexAppPath = process.env.CODEX_APP_PATH || "/Applications/Codex.app";
 const codexExecutable = join(codexAppPath, "Contents/MacOS/Codex");
 const codexCliExecutable = process.env.CODEX_CLI_PATH || join(codexAppPath, "Contents/Resources/codex");
+const nodeExecutable = process.execPath;
+const scriptPath = fileURLToPath(import.meta.url);
 const logPath = join(process.env.HOME || ".", ".codexplus/unlocker.log");
 const pollMs = 2000;
 const startupTimeoutMs = 30000;
+const serviceArg = "service";
 
 mkdirSync(dirname(logPath), { recursive: true });
 
@@ -21,6 +24,10 @@ function log(message, detail = {}) {
     ...detail,
   });
   appendFileSync(logPath, `${line}\n`);
+}
+
+function printJson(value) {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
 function notify(title, message) {
@@ -49,6 +56,10 @@ async function codexTargets() {
   }
 }
 
+function codexInstalled() {
+  return existsSync(codexExecutable);
+}
+
 function codexProcessRunning() {
   try {
     const output = execFileSync("pgrep", ["-f", "/Applications/Codex.app/Contents/MacOS/Codex"], {
@@ -61,8 +72,33 @@ function codexProcessRunning() {
   }
 }
 
+function unlockerServiceRunning() {
+  try {
+    const output = execFileSync("pgrep", ["-f", `${scriptPath} ${serviceArg}`], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .some((pid) => Number(pid) !== process.pid);
+  } catch {
+    return false;
+  }
+}
+
+function activateCodex() {
+  if (!codexInstalled()) return;
+  try {
+    execFileSync("open", ["-a", codexAppPath], { stdio: ["ignore", "ignore", "ignore"] });
+  } catch (error) {
+    log("activate_codex_failed", { error: String(error?.message || error) });
+  }
+}
+
 function launchCodex() {
-  if (!existsSync(codexExecutable)) {
+  if (!codexInstalled()) {
     throw new Error(`Codex executable not found: ${codexExecutable}`);
   }
   const child = spawn(
@@ -89,11 +125,12 @@ function codexCli(args) {
 }
 
 function effectiveFeatureState(featureName) {
+  if (!existsSync(codexCliExecutable)) return null;
   const output = codexCli(["features", "list"]);
   const line = output
     .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => line.startsWith(`${featureName} `));
+    .map((entry) => entry.trim())
+    .find((entry) => entry.startsWith(`${featureName} `));
   if (!line) return null;
   const state = line.split(/\s+/).at(-1);
   if (state === "true") return true;
@@ -387,7 +424,27 @@ async function injectAllTargets() {
   return targets.length;
 }
 
-async function main() {
+async function statusSnapshot() {
+  const targets = await codexTargets();
+  return {
+    codexInstalled: codexInstalled(),
+    codexRunning: codexProcessRunning(),
+    unlockerRunning: unlockerServiceRunning(),
+    goalsEnabled: effectiveFeatureState("goals") === true,
+    debugTargetCount: targets.length,
+    logPath,
+  };
+}
+
+function spawnService() {
+  const child = spawn(nodeExecutable, [scriptPath, serviceArg], {
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+}
+
+async function serviceMain() {
   log("unlocker_start", { debugPort, codexExecutable });
   const goalFeature = enableGoalFeatureFlag();
   let targets = await codexTargets();
@@ -395,6 +452,8 @@ async function main() {
     launchCodex();
     targets = await waitForTargets();
   }
+  activateCodex();
+
   if (!targets.length) {
     notify("CodexPlus", "没有检测到 Codex 调试页面。请先完全退出 Codex，再重新打开本工具。");
     log("no_targets_after_launch");
@@ -419,8 +478,57 @@ async function main() {
   await injectAllTargets();
 }
 
-main().catch((error) => {
+async function run() {
+  const command = process.argv[2] || serviceArg;
+
+  if (command === "status") {
+    printJson(await statusSnapshot());
+    return;
+  }
+
+  if (command === "enable-goals") {
+    printJson(enableGoalFeatureFlag());
+    return;
+  }
+
+  if (command === "launch-codex") {
+    launchCodex();
+    activateCodex();
+    printJson({ ok: true });
+    return;
+  }
+
+  if (command === "activate-codex") {
+    activateCodex();
+    printJson({ ok: true });
+    return;
+  }
+
+  if (command === "start-service") {
+    const feature = enableGoalFeatureFlag();
+    if (!unlockerServiceRunning()) {
+      spawnService();
+      log("service_spawned_from_ui", { goalFeatureEnabled: feature.enabled });
+    }
+    activateCodex();
+    printJson({ ok: true, goalsEnabled: feature.enabled, serviceRunning: true });
+    return;
+  }
+
+  if (command === serviceArg) {
+    await serviceMain();
+    return;
+  }
+
+  throw new Error(`Unknown command: ${command}`);
+}
+
+run().catch((error) => {
   log("fatal", { error: String(error?.stack || error) });
-  notify("CodexPlus 解锁失败", String(error?.message || error));
+  if (process.argv[2] === serviceArg || !process.argv[2]) {
+    notify("CodexPlus 解锁失败", String(error?.message || error));
+  } else {
+    process.stderr.write(`${String(error?.message || error)}\n`);
+  }
   process.exit(1);
 });

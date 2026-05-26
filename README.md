@@ -6,6 +6,8 @@
 
 ## 功能
 
+现在它带一个原生 macOS 小界面，打开后可以直接点按钮启动 Codex。
+
 codexplus 只做两件事：
 
 - 通过本机 Chromium DevTools Protocol 解锁 Codex 桌面端左侧的 `插件 / Plugins` 入口和插件页安装按钮。
@@ -22,14 +24,15 @@ codexplus 只做两件事：
 
 ## 原理
 
-1. 以 `--remote-debugging-port=9229` 启动 Codex 桌面端。
-2. 通过 CDP 连接 `app://-/index.html` 页面。
-3. 注入一段极小的前端脚本：
+1. 用 Swift + AppKit 生成一个本地原生窗口。
+2. 点击界面里的 `启动并解锁 Codex` 后，以 `--remote-debugging-port=9229` 启动 Codex 桌面端。
+3. 通过 CDP 连接 `app://-/index.html` 页面。
+4. 注入一段极小的前端脚本：
    - 将插件入口按钮从 disabled 状态恢复；
    - 在 API 登录模式下临时伪装插件入口所需的 ChatGPT authMethod；
    - 解锁插件页里被前端禁用的安装按钮；
    - 解除目标模式相关按钮的前端 disabled 状态。
-4. 启动前执行等价于 `codex features enable goals` 的操作，只写入 `~/.codex/config.toml` 里的 `[features].goals = true`。
+5. 启动前执行等价于 `codex features enable goals` 的操作，只写入 `~/.codex/config.toml` 里的 `[features].goals = true`。
 
 ## 安装
 
@@ -43,7 +46,9 @@ codexplus 只做两件事：
 /Applications/CodexPlus.app
 ```
 
-如果 Codex 已经用普通方式打开，并且没有调试端口，建议先完全退出 Codex，再打开这个工具。
+第一次安装会用系统自带 `swiftc` 编译界面程序，所以需要本机有 Xcode Command Line Tools。
+
+如果 Codex 已经用普通方式打开，并且没有调试端口，建议先完全退出 Codex，再打开这个工具，然后在界面里点击 `启动并解锁 Codex`。
 
 日志位置：
 
