@@ -11,6 +11,12 @@
 
 这样拆开之后，插件解锁器不再和配置导入器耦合，权限链也更干净。
 
+## 平台
+
+当前版本只适配 macOS。
+
+原因很直接：这两个工具都依赖 `Codex.app` 的 macOS 应用结构，以及 `open`、`launchctl`、`swiftc`、`LSUIElement` 这些本地能力，所以现在还不是跨平台版本。
+
 ## 致谢
 
 这个项目的思路和早期实现参考了开源项目 [CodexPlusPlus](https://github.com/BigPizzaV3/CodexPlusPlus)。
@@ -65,6 +71,12 @@
 /Applications/CodexPlus.app
 ```
 
+也可以在终端里执行：
+
+```bash
+open -a /Applications/CodexPlus.app
+```
+
 它会完成一次性启动和注入，然后自行退出，不长期驻留。
 
 ### 日志
@@ -108,6 +120,20 @@
 /Applications/Codex Config Importer.app
 ```
 
+### 使用
+
+直接打开：
+
+```text
+/Applications/Codex Config Importer.app
+```
+
+也可以在终端里执行：
+
+```bash
+open -a "/Applications/Codex Config Importer.app"
+```
+
 ### 导入逻辑
 
 默认推荐 `Desktop auth.json` 模式：
@@ -125,6 +151,14 @@
 ```text
 ~/.codexplus/backups/
 ```
+
+## 推荐使用顺序
+
+如果你两个都要用，推荐这样：
+
+1. 先运行 `CodexPlus.app`，完成插件解锁
+2. 再打开官方 `Codex`
+3. 需要配模型时，再单独打开 `Codex Config Importer.app`
 
 ## 卸载
 
