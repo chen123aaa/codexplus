@@ -9,9 +9,8 @@ if [ ! -x "$NODE" ]; then
 fi
 
 if [ -z "$NODE" ] || [ ! -x "$NODE" ]; then
-  osascript -e 'display notification "找不到 Node 运行时，请确认 Codex 已安装。" with title "Codex 插件解锁失败"'
+  osascript -e 'display notification "找不到 Node 运行时，请确认 Codex 已安装。" with title "CodexPlus 解锁失败"'
   exit 1
 fi
 
 exec "$NODE" "$APP_DIR/Resources/unlocker.mjs"
-

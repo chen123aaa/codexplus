@@ -2,9 +2,11 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-APP="/Applications/Codex 插件解锁.app"
+APP="/Applications/CodexPlus.app"
+OLD_APP="/Applications/Codex 插件解锁.app"
 
 rm -rf "$APP"
+rm -rf "$OLD_APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$ROOT/Info.plist" "$APP/Contents/Info.plist"
@@ -16,4 +18,3 @@ chmod +x "$APP/Contents/Resources/unlocker.mjs"
 xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
 
 echo "$APP"
-

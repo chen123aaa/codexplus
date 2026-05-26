@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 const debugPort = Number(process.env.CODEX_PLUGIN_UNLOCK_PORT || "9229");
 const codexAppPath = process.env.CODEX_APP_PATH || "/Applications/Codex.app";
 const codexExecutable = join(codexAppPath, "Contents/MacOS/Codex");
-const logPath = join(process.env.HOME || ".", ".codex-plugin-unlocker/unlocker.log");
+const codexCliExecutable = process.env.CODEX_CLI_PATH || join(codexAppPath, "Contents/Resources/codex");
+const logPath = join(process.env.HOME || ".", ".codexplus/unlocker.log");
 const pollMs = 2000;
 const startupTimeoutMs = 30000;
 
@@ -79,6 +80,50 @@ function launchCodex() {
   log("codex_launch_requested", { codexExecutable, debugPort });
 }
 
+function codexCli(args) {
+  return execFileSync(codexCliExecutable, args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 10000,
+  });
+}
+
+function effectiveFeatureState(featureName) {
+  const output = codexCli(["features", "list"]);
+  const line = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.startsWith(`${featureName} `));
+  if (!line) return null;
+  const state = line.split(/\s+/).at(-1);
+  if (state === "true") return true;
+  if (state === "false") return false;
+  return null;
+}
+
+function enableGoalFeatureFlag() {
+  if (!existsSync(codexCliExecutable)) {
+    log("goal_feature_skipped", { reason: "codex_cli_missing", codexCliExecutable });
+    return { enabled: false, changed: false, error: `Codex CLI not found: ${codexCliExecutable}` };
+  }
+
+  try {
+    const before = effectiveFeatureState("goals");
+    if (before === true) {
+      log("goal_feature_already_enabled");
+      return { enabled: true, changed: false };
+    }
+
+    const output = codexCli(["features", "enable", "goals"]);
+    const after = effectiveFeatureState("goals");
+    log("goal_feature_enable_requested", { before, after, output: output.trim() });
+    return { enabled: after === true, changed: after === true };
+  } catch (error) {
+    log("goal_feature_enable_failed", { error: String(error?.message || error), codexCliExecutable });
+    return { enabled: false, changed: false, error: String(error?.message || error) };
+  }
+}
+
 async function waitForTargets() {
   const started = Date.now();
   while (Date.now() - started < startupTimeoutMs) {
@@ -144,6 +189,7 @@ const unlockerScript = String.raw`
 
   const selectors = {
     disabledInstallButton: 'button:disabled, button[aria-disabled="true"], [role="button"][aria-disabled="true"], button[data-disabled], [role="button"][data-disabled], button.cursor-not-allowed, [role="button"].cursor-not-allowed, button.pointer-events-none, [role="button"].pointer-events-none',
+    disabledInteractive: 'button:disabled, button[aria-disabled="true"], [role="button"][aria-disabled="true"], button[data-disabled], [role="button"][data-disabled], button.cursor-not-allowed, [role="button"].cursor-not-allowed, button.pointer-events-none, [role="button"].pointer-events-none',
     pluginNavButton: 'nav[role="navigation"] button.h-token-nav-row.w-full',
     pluginSvgPath: 'svg path[d^="M7.94562 14.0277"]',
   };
@@ -289,10 +335,35 @@ const unlockerScript = String.raw`
     return count;
   }
 
+  function isGoalControl(element) {
+    const text = [
+      element.textContent,
+      element.getAttribute?.("aria-label"),
+      element.getAttribute?.("title"),
+      element.getAttribute?.("data-testid"),
+      element.getAttribute?.("data-test-id"),
+    ].filter(Boolean).join(" ");
+    return /\bgoal\b|目标|设置目标|清除目标|Goal/i.test(text);
+  }
+
+  function unblockGoalControls() {
+    let count = 0;
+    Array.from(document.querySelectorAll(selectors.disabledInteractive)).forEach((node) => {
+      const button = node.closest?.("button, [role='button']") || node;
+      if (!isGoalControl(button)) return;
+      clearDisabledState(button);
+      button.querySelectorAll?.("[disabled], [aria-disabled], [data-disabled], .cursor-not-allowed, .pointer-events-none")
+        .forEach(clearDisabledState);
+      count += 1;
+    });
+    return count;
+  }
+
   function tick() {
     const entryUnlocked = enablePluginEntry();
     const installUnlocked = unblockPluginInstallButtons();
-    return { entryUnlocked, installUnlocked };
+    const goalControlsUnlocked = unblockGoalControls();
+    return { entryUnlocked, installUnlocked, goalControlsUnlocked };
   }
 
   tick();
@@ -318,16 +389,20 @@ async function injectAllTargets() {
 
 async function main() {
   log("unlocker_start", { debugPort, codexExecutable });
+  const goalFeature = enableGoalFeatureFlag();
   let targets = await codexTargets();
   if (!targets.length) {
     launchCodex();
     targets = await waitForTargets();
   }
   if (!targets.length) {
-    notify("Codex 插件解锁", "没有检测到 Codex 调试页面。请先完全退出 Codex，再重新打开本工具。");
+    notify("CodexPlus", "没有检测到 Codex 调试页面。请先完全退出 Codex，再重新打开本工具。");
     log("no_targets_after_launch");
   } else {
-    notify("Codex 插件解锁", "已启动，正在保持插件入口解锁。");
+    const message = goalFeature.changed
+      ? "已开启目标模式配置。若 Codex 之前已经打开，请完全退出后重新打开 CodexPlus 让后端生效。"
+      : "已启动，正在保持插件入口和目标模式解锁。";
+    notify("CodexPlus", message);
   }
 
   let emptyTargetTicks = 0;
@@ -346,6 +421,6 @@ async function main() {
 
 main().catch((error) => {
   log("fatal", { error: String(error?.stack || error) });
-  notify("Codex 插件解锁失败", String(error?.message || error));
+  notify("CodexPlus 解锁失败", String(error?.message || error));
   process.exit(1);
 });
