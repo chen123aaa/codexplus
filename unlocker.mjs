@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, execFileSync } from "node:child_process";
-import { mkdirSync, appendFileSync, existsSync } from "node:fs";
+import { mkdirSync, appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,10 +12,12 @@ const nodeExecutable = process.execPath;
 const scriptPath = fileURLToPath(import.meta.url);
 const logPath = join(process.env.HOME || ".", ".codexplus/unlocker.log");
 const configPath = join(process.env.HOME || ".", ".codex/config.toml");
+const authPath = join(process.env.HOME || ".", ".codex/auth.json");
 const backupDir = join(process.env.HOME || ".", ".codexplus/backups");
 const pollMs = 2000;
 const startupTimeoutMs = 30000;
 const serviceArg = "service";
+const oneShotServiceArg = "service-once";
 
 mkdirSync(dirname(logPath), { recursive: true });
 mkdirSync(backupDir, { recursive: true });
@@ -75,6 +77,27 @@ function codexProcessRunning() {
   }
 }
 
+function codexMainProcesses() {
+  try {
+    const output = execFileSync("ps", ["-axo", "pid=,command="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const match = line.match(/^(\d+)\s+(.+)$/);
+        if (!match) return null;
+        return { pid: Number(match[1]), command: match[2] };
+      })
+      .filter((entry) => entry && entry.command.includes("/Applications/Codex.app/Contents/MacOS/Codex"));
+  } catch {
+    return [];
+  }
+}
+
 function unlockerServiceRunning() {
   try {
     const output = execFileSync("pgrep", ["-f", `${scriptPath} ${serviceArg}`], {
@@ -91,6 +114,51 @@ function unlockerServiceRunning() {
   }
 }
 
+function killLegacyUnlockers() {
+  const legacyPatterns = [
+    "/Applications/Codex 插件解锁.app/Contents/Resources/unlocker.mjs",
+  ];
+
+  for (const pattern of legacyPatterns) {
+    try {
+      const output = execFileSync("pgrep", ["-f", pattern], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      const pids = output
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+      for (const pid of pids) {
+        execFileSync("kill", [pid], { stdio: ["ignore", "ignore", "ignore"] });
+        log("legacy_unlocker_killed", { pid, pattern });
+      }
+    } catch {
+      // No legacy process running.
+    }
+  }
+}
+
+function killCurrentUnlockerServices() {
+  try {
+    const output = execFileSync("pgrep", ["-f", `${scriptPath} ${serviceArg}`], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const pids = output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((pid) => Number(pid) !== process.pid);
+    for (const pid of pids) {
+      execFileSync("kill", [pid], { stdio: ["ignore", "ignore", "ignore"] });
+      log("current_unlocker_service_killed", { pid });
+    }
+  } catch {
+    // No current service running.
+  }
+}
+
 function activateCodex() {
   if (!codexInstalled()) return;
   try {
@@ -98,6 +166,50 @@ function activateCodex() {
   } catch (error) {
     log("activate_codex_failed", { error: String(error?.message || error) });
   }
+}
+
+function quitCodex() {
+  try {
+    execFileSync("osascript", ["-e", 'tell application "Codex" to quit'], {
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    log("codex_quit_requested");
+  } catch (error) {
+    log("codex_quit_request_failed", { error: String(error?.message || error) });
+  }
+}
+
+async function waitForCodexExit(timeoutMs = 15000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (!codexProcessRunning()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  return false;
+}
+
+async function restartCodexInUnlockMode() {
+  quitCodex();
+  const exited = await waitForCodexExit();
+  if (!exited) {
+    try {
+      execFileSync("pkill", ["-f", "/Applications/Codex.app/Contents/MacOS/Codex"], {
+        stdio: ["ignore", "ignore", "ignore"],
+      });
+      log("codex_force_killed_for_restart");
+    } catch (error) {
+      log("codex_force_kill_failed", { error: String(error?.message || error) });
+    }
+    await waitForCodexExit(5000);
+  }
+  launchCodex();
+}
+
+function codexNeedsRelaunchForUnlock(targets) {
+  const processes = codexMainProcesses();
+  const hasDebugProcess = processes.some((process) => process.command.includes("--remote-debugging-port="));
+  const hasPlainProcess = processes.some((process) => !process.command.includes("--remote-debugging-port="));
+  return targets.length === 0 || hasPlainProcess || !hasDebugProcess || processes.length !== 1;
 }
 
 function launchCodex() {
@@ -222,10 +334,11 @@ async function evaluateOnTarget(target, expression) {
 
 const unlockerScript = String.raw`
 (() => {
-  if (window.__codexPluginUnlockerInstalled === "1") {
-    return { status: "already-installed" };
+  const version = "codexplus-v2";
+  const existing = window.__codexPlusUnlockerController;
+  if (existing && existing.version === version && typeof existing.tick === "function") {
+    return { status: "already-installed", ...existing.tick() };
   }
-  window.__codexPluginUnlockerInstalled = "1";
 
   const selectors = {
     disabledInstallButton: 'button:disabled, button[aria-disabled="true"], [role="button"][aria-disabled="true"], button[data-disabled], [role="button"][data-disabled], button.cursor-not-allowed, [role="button"].cursor-not-allowed, button.pointer-events-none, [role="button"].pointer-events-none',
@@ -406,6 +519,7 @@ const unlockerScript = String.raw`
     return { entryUnlocked, installUnlocked, goalControlsUnlocked };
   }
 
+  window.__codexPlusUnlockerController = { version, tick };
   tick();
   window.__codexPluginUnlockerTimer = setInterval(tick, 1000);
   new MutationObserver(tick).observe(document.documentElement, { childList: true, subtree: true });
@@ -452,6 +566,7 @@ function validateIdentifier(value, fieldName) {
 function validateConfigPayload(payload) {
   validateIdentifier(payload.providerId, "provider_id");
   validateIdentifier(payload.profileId, "profile_id");
+  const authMode = payload.authMode === "env_key" ? "env_key" : "desktop_auth";
   if (typeof payload.providerName !== "string" || payload.providerName.trim().length === 0) {
     payload.providerName = payload.providerId;
   }
@@ -464,8 +579,12 @@ function validateConfigPayload(payload) {
   } catch {
     throw new Error("base_url 不是合法 URL");
   }
-  if (typeof payload.apiKeyEnv !== "string" || !/^[A-Z][A-Z0-9_]*$/.test(payload.apiKeyEnv)) {
-    throw new Error("api_key env 名必须像 OPENROUTER_API_KEY 这样的大写环境变量");
+  if (authMode === "env_key") {
+    if (typeof payload.apiKeyEnv !== "string" || !/^[A-Z][A-Z0-9_]*$/.test(payload.apiKeyEnv)) {
+      throw new Error("api_key env 名必须像 OPENROUTER_API_KEY 这样的大写环境变量");
+    }
+  } else if (typeof payload.apiKeyValue !== "string" || payload.apiKeyValue.trim().length === 0) {
+    throw new Error("API Key 不能为空");
   }
   if (typeof payload.model !== "string" || payload.model.trim().length === 0) {
     throw new Error("model 不能为空");
@@ -487,7 +606,9 @@ function validateConfigPayload(payload) {
     providerId: payload.providerId,
     providerName: payload.providerName.trim(),
     baseUrl: payload.baseUrl.trim(),
-    apiKeyEnv: payload.apiKeyEnv.trim(),
+    authMode,
+    apiKeyEnv: typeof payload.apiKeyEnv === "string" ? payload.apiKeyEnv.trim() : "",
+    apiKeyValue: typeof payload.apiKeyValue === "string" ? payload.apiKeyValue.trim() : "",
     model: payload.model.trim(),
     profileId: payload.profileId,
     modelReasoningEffort: typeof payload.modelReasoningEffort === "string" && payload.modelReasoningEffort.trim()
@@ -512,9 +633,13 @@ function renderProviderSection(payload) {
     `[model_providers.${payload.providerId}]`,
     `name = ${tomlString(payload.providerName)}`,
     `base_url = ${tomlString(payload.baseUrl)}`,
-    `env_key = ${tomlString(payload.apiKeyEnv)}`,
     `wire_api = "responses"`,
   ];
+  if (payload.authMode === "env_key") {
+    lines.splice(3, 0, `env_key = ${tomlString(payload.apiKeyEnv)}`);
+  } else {
+    lines.push("requires_openai_auth = true");
+  }
   if (Object.keys(payload.httpHeaders).length) {
     lines.push(`http_headers = ${tomlInlineTable(payload.httpHeaders)}`);
   }
@@ -568,11 +693,26 @@ function backupConfig(text) {
   return backupPath;
 }
 
+function backupAuth(text) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupPath = join(backupDir, `auth-${stamp}.json`);
+  appendFileSync(backupPath, text);
+  return backupPath;
+}
+
 function readConfigText() {
   try {
     return execFileSync("cat", [configPath], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
   } catch {
     return "";
+  }
+}
+
+function readAuthJson() {
+  try {
+    return JSON.parse(readFileSync(authPath, "utf8"));
+  } catch {
+    return {};
   }
 }
 
@@ -589,11 +729,20 @@ function writeConfigText(text) {
   });
 }
 
+function writeAuthJson(auth) {
+  writeFileSync(authPath, `${JSON.stringify(auth, null, 2)}\n`, "utf8");
+}
+
 function buildConfigPreview(payload) {
   return {
     providerSnippet: renderProviderSection(payload).trimEnd(),
     profileSnippet: renderProfileSection(payload).trimEnd(),
-    warnings: ["配置导入后更适合新开一个 Codex 会话再使用。"],
+    warnings: [
+      payload.authMode === "desktop_auth"
+        ? "当前模式会把地址写进 config.toml，把 API Key 写进 auth.json。"
+        : "当前模式只写 env_key，真正的密钥值需要由系统环境变量提供。",
+      "配置导入后更适合新开一个 Codex 会话再使用。",
+    ],
   };
 }
 
@@ -605,15 +754,25 @@ function validateConfigImport(encoded) {
 function importConfig(encoded) {
   const payload = validateConfigPayload(decodePayload(encoded));
   const before = readConfigText();
+  const authBeforeText = existsSync(authPath) ? readFileSync(authPath, "utf8") : "{}\n";
   const providerSection = renderProviderSection(payload);
   const profileSection = renderProfileSection(payload);
   let merged = upsertTopLevelSection(before, `model_providers.${payload.providerId}`, providerSection);
   merged = upsertTopLevelSection(merged, `profiles.${payload.profileId}`, profileSection);
   const backupPath = backupConfig(before);
+  let authBackupPath = null;
   writeConfigText(merged);
+  if (payload.authMode === "desktop_auth") {
+    const auth = readAuthJson();
+    auth.auth_mode = "apikey";
+    auth.OPENAI_API_KEY = payload.apiKeyValue;
+    authBackupPath = backupAuth(authBeforeText);
+    writeAuthJson(auth);
+  }
   log("config_imported", {
     configPath,
     backupPath,
+    authPath: payload.authMode === "desktop_auth" ? authPath : null,
     providerId: payload.providerId,
     profileId: payload.profileId,
   });
@@ -621,26 +780,38 @@ function importConfig(encoded) {
     ok: true,
     configPath,
     backupPath,
+    authPath: payload.authMode === "desktop_auth" ? authPath : null,
+    authBackupPath,
     providerId: payload.providerId,
     profileId: payload.profileId,
     ...buildConfigPreview(payload),
   };
 }
 
-function spawnService() {
-  const child = spawn(nodeExecutable, [scriptPath, serviceArg], {
+function spawnService(mode = serviceArg) {
+  const child = spawn(nodeExecutable, [scriptPath, mode], {
     detached: true,
     stdio: "ignore",
   });
   child.unref();
 }
 
-async function serviceMain() {
+async function serviceMain({ oneShot = false } = {}) {
+  killLegacyUnlockers();
   log("unlocker_start", { debugPort, codexExecutable });
   const goalFeature = enableGoalFeatureFlag();
   let targets = await codexTargets();
-  if (!targets.length) {
-    launchCodex();
+  if (codexNeedsRelaunchForUnlock(targets)) {
+    if (codexProcessRunning()) {
+      log("codex_restart_needed_for_clean_unlock_mode", {
+        targets: targets.length,
+        processes: codexMainProcesses(),
+      });
+      notify("CodexPlus", "检测到当前 Codex 不是单一解锁实例，正在自动重启到插件解锁模式。");
+      await restartCodexInUnlockMode();
+    } else {
+      launchCodex();
+    }
     targets = await waitForTargets();
   }
   activateCodex();
@@ -653,6 +824,16 @@ async function serviceMain() {
       ? "已开启目标模式配置。若 Codex 之前已经打开，请完全退出后重新打开 CodexPlus 让后端生效。"
       : "已启动，正在保持插件入口和目标模式解锁。";
     notify("CodexPlus", message);
+  }
+
+  if (oneShot) {
+    const injectedCount = await injectAllTargets();
+    log("one_shot_unlock_completed", { injectedCount });
+    setTimeout(() => {
+      log("one_shot_unlock_exit");
+      process.exit(0);
+    }, 2500);
+    return;
   }
 
   let emptyTargetTicks = 0;
@@ -696,11 +877,11 @@ async function run() {
   }
 
   if (command === "start-service") {
+    killLegacyUnlockers();
+    killCurrentUnlockerServices();
     const feature = enableGoalFeatureFlag();
-    if (!unlockerServiceRunning()) {
-      spawnService();
-      log("service_spawned_from_ui", { goalFeatureEnabled: feature.enabled });
-    }
+    spawnService(oneShotServiceArg);
+    log("service_spawned_from_ui", { goalFeatureEnabled: feature.enabled, mode: oneShotServiceArg });
     activateCodex();
     printJson({ ok: true, goalsEnabled: feature.enabled, serviceRunning: true });
     return;
@@ -717,7 +898,12 @@ async function run() {
   }
 
   if (command === serviceArg) {
-    await serviceMain();
+    await serviceMain({ oneShot: false });
+    return;
+  }
+
+  if (command === oneShotServiceArg) {
+    await serviceMain({ oneShot: true });
     return;
   }
 

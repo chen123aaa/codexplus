@@ -14,6 +14,8 @@ struct ConfigPayload: Codable {
   let providerId: String
   let providerName: String
   let baseUrl: String
+  let authMode: String
+  let apiKeyValue: String
   let apiKeyEnv: String
   let model: String
   let profileId: String
@@ -28,6 +30,8 @@ struct ConfigCommandResponse: Decodable {
   let warnings: [String]
   let configPath: String?
   let backupPath: String?
+  let authPath: String?
+  let authBackupPath: String?
   let providerId: String?
   let profileId: String?
 }
@@ -49,6 +53,8 @@ final class CodexPlusApp: NSObject, NSApplicationDelegate {
   private let providerIdField = NSTextField(string: "")
   private let providerNameField = NSTextField(string: "")
   private let baseUrlField = NSTextField(string: "")
+  private let authModeButton = NSPopUpButton()
+  private let apiKeyValueField = NSSecureTextField(string: "")
   private let apiKeyEnvField = NSTextField(string: "")
   private let profileIdField = NSTextField(string: "")
   private let modelField = NSTextField(string: "")
@@ -210,6 +216,8 @@ final class CodexPlusApp: NSObject, NSApplicationDelegate {
       [makeLabel("Provider ID"), providerIdField],
       [makeLabel("Provider Name"), providerNameField],
       [makeLabel("Base URL"), baseUrlField],
+      [makeLabel("Auth Mode"), authModeButton],
+      [makeLabel("API Key"), apiKeyValueField],
       [makeLabel("API Key Env"), apiKeyEnvField],
       [makeLabel("Profile ID"), profileIdField],
       [makeLabel("Model"), modelField],
@@ -223,11 +231,14 @@ final class CodexPlusApp: NSObject, NSApplicationDelegate {
     grid.xPlacement = .fill
     grid.column(at: 0).xPlacement = .trailing
 
-    [providerIdField, providerNameField, baseUrlField, apiKeyEnvField, profileIdField, modelField, reasoningField].forEach {
+    [providerIdField, providerNameField, baseUrlField, apiKeyValueField, apiKeyEnvField, profileIdField, modelField, reasoningField].forEach {
       $0.font = NSFont.systemFont(ofSize: 13)
       $0.translatesAutoresizingMaskIntoConstraints = false
     }
     headersTextView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+    authModeButton.font = NSFont.systemFont(ofSize: 13)
+    authModeButton.addItems(withTitles: ["Desktop auth.json", "Env Key"])
+    authModeButton.selectItem(at: 0)
 
     [validateButton, importButton, exportButton, importJsonButton].forEach { button in
       button.bezelStyle = .rounded
@@ -328,11 +339,22 @@ final class CodexPlusApp: NSObject, NSApplicationDelegate {
     providerIdField.stringValue = "openrouter"
     providerNameField.stringValue = "OpenRouter"
     baseUrlField.stringValue = "https://openrouter.ai/api/v1"
+    authModeButton.selectItem(at: 0)
+    apiKeyValueField.stringValue = ""
     apiKeyEnvField.stringValue = "OPENROUTER_API_KEY"
     profileIdField.stringValue = "openrouter_gpt5"
     modelField.stringValue = "gpt-5.4"
     reasoningField.stringValue = "high"
     headersTextView.string = "{\n  \"HTTP-Referer\": \"https://example.com\",\n  \"X-Title\": \"CodexPlus\"\n}"
+  }
+
+  private func scheduleAutoQuitAfterLaunch() {
+    launcherStatus.stringValue = "Codex 已切到解锁模式，CodexPlus 即将自动退出"
+    launcherStatus.textColor = NSColor(calibratedRed: 0.10, green: 0.49, blue: 0.38, alpha: 1)
+    launcherDetail.stringValue = "这样可以尽量避免它继续占着前台，影响 computer-use 的权限上下文。"
+    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+      NSApp.terminate(nil)
+    }
   }
 
   @objc private func startCodex() {
@@ -342,7 +364,9 @@ final class CodexPlusApp: NSObject, NSApplicationDelegate {
         self.launcherStatus.stringValue = "后台服务已启动"
         self.launcherStatus.textColor = NSColor(calibratedRed: 0.10, green: 0.49, blue: 0.38, alpha: 1)
         self.launcherDetail.stringValue = "Codex 会以带调试端口的方式启动，goals 也会一并打开。"
-        self.runCommand(arguments: ["activate-codex"], busyText: nil, forImporter: false) { _, _ in }
+        self.runCommand(arguments: ["activate-codex"], busyText: nil, forImporter: false) { _, _ in
+          self.scheduleAutoQuitAfterLaunch()
+        }
       } else {
         self.launcherStatus.stringValue = "启动失败"
         self.launcherStatus.textColor = NSColor.systemRed
@@ -417,6 +441,8 @@ final class CodexPlusApp: NSObject, NSApplicationDelegate {
     providerIdField.stringValue = payload.providerId
     providerNameField.stringValue = payload.providerName
     baseUrlField.stringValue = payload.baseUrl
+    authModeButton.selectItem(at: payload.authMode == "env_key" ? 1 : 0)
+    apiKeyValueField.stringValue = payload.apiKeyValue
     apiKeyEnvField.stringValue = payload.apiKeyEnv
     profileIdField.stringValue = payload.profileId
     modelField.stringValue = payload.model
@@ -440,6 +466,8 @@ final class CodexPlusApp: NSObject, NSApplicationDelegate {
       providerId: providerIdField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
       providerName: providerNameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
       baseUrl: baseUrlField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
+      authMode: authModeButton.indexOfSelectedItem == 1 ? "env_key" : "desktop_auth",
+      apiKeyValue: apiKeyValueField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
       apiKeyEnv: apiKeyEnvField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
       model: modelField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
       profileId: profileIdField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -479,6 +507,16 @@ final class CodexPlusApp: NSObject, NSApplicationDelegate {
         if let backupPath = response.backupPath {
           lines.append("")
           lines.append("backup: \(backupPath)")
+        }
+        if let authPath = response.authPath {
+          lines.append("auth: \(authPath)")
+        }
+        if let authBackupPath = response.authBackupPath {
+          lines.append("auth backup: \(authBackupPath)")
+        }
+        if !response.warnings.isEmpty {
+          lines.append("")
+          lines.append(contentsOf: response.warnings.map { "note: \($0)" })
         }
         self.importerPreviewTextView.string = lines.joined(separator: "\n")
       }
