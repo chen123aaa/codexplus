@@ -1,38 +1,58 @@
 # codexplus
 
-轻量版 CodexPlusPlus，只保留 API 登录模式下解锁 Codex 桌面端插件功能和 Goal 目标模式。
+`codexplus` 现在做两件事，而且都只服务 Codex：
 
-它比 CodexPlusPlus 少一个 `plus`，也少掉中转、广告、会话管理、Provider 同步等重功能。
+- 启动 Codex，并保持插件入口和 `goals` 目标模式可用
+- 作为一个轻量的 `Codex Config Importer`，把表单配置 merge 到 `~/.codex/config.toml`
 
-## 功能
+它不是代理器，也不是“大一统切换器”。
 
-现在它带一个原生 macOS 小界面，打开后可以直接点按钮启动 Codex。
+## 界面
 
-codexplus 只做两件事：
+`CodexPlus.app` 现在有两个页签：
 
-- 通过本机 Chromium DevTools Protocol 解锁 Codex 桌面端左侧的 `插件 / Plugins` 入口和插件页安装按钮。
-- 通过 Codex 官方 feature flag 打开实验性的 `goals` 目标模式，避免后端返回 `goals feature is disabled`。
+- `启动器`
+  - 启动并解锁 Codex
+  - 打开 Codex
+  - 查看日志
+- `配置导入`
+  - 新增 Provider 参数
+  - 新增 Profile 参数
+  - 校验配置
+  - 导入到 Codex
+  - 导出 / 导入 JSON 备份
 
-它不会：
+## 配置导入支持字段
 
-- 写入模型供应商、代理、base_url 等配置
-- 配置或代理任何 `base_url`
-- 同步 provider
-- 删除、导出、移动会话
-- 拉取广告或远程推荐内容
-- 修改 `/Applications/Codex.app`
+- `provider_id`
+- `provider name`
+- `base_url`
+- `api_key env`
+- `model`
+- `profile_id`
+- `model_reasoning_effort`
+- 可选 `http_headers`
 
-## 原理
+生成结果会自动转成类似下面的片段，并 merge 到用户级 `~/.codex/config.toml`：
 
-1. 用 Swift + AppKit 生成一个本地原生窗口。
-2. 点击界面里的 `启动并解锁 Codex` 后，以 `--remote-debugging-port=9229` 启动 Codex 桌面端。
-3. 通过 CDP 连接 `app://-/index.html` 页面。
-4. 注入一段极小的前端脚本：
-   - 将插件入口按钮从 disabled 状态恢复；
-   - 在 API 登录模式下临时伪装插件入口所需的 ChatGPT authMethod；
-   - 解锁插件页里被前端禁用的安装按钮；
-   - 解除目标模式相关按钮的前端 disabled 状态。
-5. 启动前执行等价于 `codex features enable goals` 的操作，只写入 `~/.codex/config.toml` 里的 `[features].goals = true`。
+```toml
+[model_providers.openrouter]
+name = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+env_key = "OPENROUTER_API_KEY"
+wire_api = "responses"
+
+[profiles.openrouter_gpt5]
+model_provider = "openrouter"
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+```
+
+导入时会先备份旧配置到：
+
+```text
+~/.codexplus/backups/
+```
 
 ## 安装
 
@@ -46,11 +66,9 @@ codexplus 只做两件事：
 /Applications/CodexPlus.app
 ```
 
-第一次安装会用系统自带 `swiftc` 编译界面程序，所以需要本机有 Xcode Command Line Tools。
+第一次安装会用系统自带 `swiftc` 编译原生 macOS 界面，所以需要本机装有 Xcode Command Line Tools。
 
-如果 Codex 已经用普通方式打开，并且没有调试端口，建议先完全退出 Codex，再打开这个工具，然后在界面里点击 `启动并解锁 Codex`。
-
-日志位置：
+## 日志
 
 ```text
 ~/.codexplus/unlocker.log
@@ -66,6 +84,6 @@ rm -rf ~/.codexplus
 
 ## 说明
 
-codexplus 不修改 Codex 安装文件，也不改变模型供应商配置。模型请求走哪里完全取决于你自己的 `~/.codex/config.toml`。
-
-Goal 目标模式是 Codex 自带的实验性功能。本工具只负责打开本地 feature flag；如果未来官方移除或改名，工具会在日志里记录失败原因。
+- `CodexPlus` 不修改 `/Applications/Codex.app`
+- 不做代理，不改证书，不常驻额外网络服务
+- 配置导入更适合新开一个 Codex 会话后生效，不保证无缝切当前正在跑的会话
