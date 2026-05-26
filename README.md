@@ -45,6 +45,8 @@
 - 以带调试端口的方式启动 Codex
 - 解锁插件入口和插件安装按钮
 - 开启 `goals` 目标模式
+- 开启运行时防止系统休眠
+- 开启接通电源时远程控制保持唤醒
 - 尽量保持本地线程视图优先
 
 它不会再承担配置导入功能。
@@ -78,6 +80,25 @@ open -a /Applications/CodexPlus.app
 ```
 
 它会完成一次性启动和注入，然后自行退出，不长期驻留。
+
+### 唤醒 / 锁屏相关
+
+CodexPlus 会写入 Codex 官方配置：
+
+```toml
+[desktop]
+preventSleepWhileRunning = true
+keepRemoteControlAwakeWhilePluggedIn = true
+```
+
+这两个开关对应的是：
+
+- Codex 运行对话时，尽量防止系统自动休眠
+- 接通电源时，远程控制保持唤醒
+
+之前看到的“锁屏状态下使用 Mac 应用程序”入口，属于 Codex 官方远程控制 / 手机连接相关界面。这个入口在新版 Codex 里还存在，但会受登录方式、账号能力、远程控制状态影响，不一定每次都显示。
+
+所以 CodexPlus 现在做的是：把本地能打开的底层配置先打开，并在前端注入时尽量解除相关按钮的禁用状态；如果官方后端没有给当前账号开放入口，它不会伪造后端能力。
 
 ### 日志
 
@@ -173,6 +194,7 @@ rm -rf ~/.codexplus
 
 - `CodexPlus` 不改 `/Applications/Codex.app`
 - 不做代理，不改证书，不挂额外网络服务
+- 唤醒配置写在 `~/.codex/config.toml`，可以随时手动删除
 - 配置导入更适合新开一个 Codex 会话后生效
 
 ## 后续

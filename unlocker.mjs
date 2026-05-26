@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, execFileSync } from "node:child_process";
-import { mkdirSync, appendFileSync, existsSync } from "node:fs";
+import { mkdirSync, appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,6 +11,7 @@ const codexCliExecutable = process.env.CODEX_CLI_PATH || join(codexAppPath, "Con
 const nodeExecutable = process.execPath;
 const scriptPath = fileURLToPath(import.meta.url);
 const logPath = join(process.env.HOME || ".", ".codexplus/unlocker.log");
+const codexConfigPath = join(process.env.HOME || ".", ".codex/config.toml");
 const pollMs = 2000;
 const startupTimeoutMs = 30000;
 const serviceArg = "service";
@@ -262,6 +263,65 @@ function enableGoalFeatureFlag() {
   } catch (error) {
     log("goal_feature_enable_failed", { error: String(error?.message || error), codexCliExecutable });
     return { enabled: false, changed: false, error: String(error?.message || error) };
+  }
+}
+
+function ensureDesktopSetting(raw, key, value) {
+  const normalizedValue = String(value);
+  const lines = raw.split(/\r?\n/);
+  const desktopStart = lines.findIndex((line) => /^\s*\[desktop\]\s*(?:#.*)?$/.test(line));
+
+  if (desktopStart < 0) {
+    const prefix = raw.trimEnd();
+    return `${prefix}${prefix ? "\n\n" : ""}[desktop]\n${key} = ${normalizedValue}\n`;
+  }
+
+  let desktopEnd = lines.length;
+  for (let i = desktopStart + 1; i < lines.length; i += 1) {
+    if (/^\s*\[[^\]]+\]\s*(?:#.*)?$/.test(lines[i])) {
+      desktopEnd = i;
+      break;
+    }
+  }
+
+  const settingRegex = new RegExp(`^\\s*${key}\\s*=`);
+  for (let i = desktopStart + 1; i < desktopEnd; i += 1) {
+    if (settingRegex.test(lines[i])) {
+      const nextLine = `${key} = ${normalizedValue}`;
+      if (lines[i].trim() === nextLine) return raw;
+      lines[i] = nextLine;
+      return lines.join("\n");
+    }
+  }
+
+  lines.splice(desktopEnd, 0, `${key} = ${normalizedValue}`);
+  return lines.join("\n");
+}
+
+function enableDesktopPowerSettings() {
+  try {
+    const before = existsSync(codexConfigPath) ? readFileSync(codexConfigPath, "utf8") : "";
+    let after = before;
+    after = ensureDesktopSetting(after, "preventSleepWhileRunning", true);
+    after = ensureDesktopSetting(after, "keepRemoteControlAwakeWhilePluggedIn", true);
+
+    const changed = after !== before;
+    if (changed) {
+      mkdirSync(dirname(codexConfigPath), { recursive: true });
+      writeFileSync(codexConfigPath, after, "utf8");
+    }
+
+    log("desktop_power_settings_enabled", { changed, codexConfigPath });
+    return {
+      enabled: true,
+      changed,
+      configPath: codexConfigPath,
+      preventSleepWhileRunning: true,
+      keepRemoteControlAwakeWhilePluggedIn: true,
+    };
+  } catch (error) {
+    log("desktop_power_settings_failed", { error: String(error?.message || error), codexConfigPath });
+    return { enabled: false, changed: false, error: String(error?.message || error), configPath: codexConfigPath };
   }
 }
 
@@ -525,6 +585,39 @@ const unlockerScript = String.raw`
     return /\bgoal\b|目标|设置目标|清除目标|Goal/i.test(text);
   }
 
+  function isDesktopPowerControl(element) {
+    const text = [
+      element.textContent,
+      element.getAttribute?.("aria-label"),
+      element.getAttribute?.("title"),
+      element.getAttribute?.("data-testid"),
+      element.getAttribute?.("data-test-id"),
+    ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+    return /运行时防止系统休眠|让这台\s*Mac\s*保持唤醒状态|保持此电脑处于唤醒状态|锁屏状态下使用\s*Mac\s*应用程序|在锁屏状态下使用\s*Mac\s*应用程序|Prevent sleep while running|Keep this Mac awake|Use Mac apps while locked|keep.*awake|prevent.*sleep/i.test(text);
+  }
+
+  function unblockDesktopPowerControls() {
+    let count = 0;
+    Array.from(document.querySelectorAll(selectors.disabledInteractive + ", [hidden], [aria-hidden='true']"))
+      .forEach((node) => {
+        const control = node.closest?.("button, [role='button'], [role='switch'], label, div") || node;
+        if (!isDesktopPowerControl(control)) return;
+        clearDisabledState(control);
+        control.removeAttribute?.("hidden");
+        control.removeAttribute?.("aria-hidden");
+        control.style.display = "";
+        control.querySelectorAll?.("[disabled], [aria-disabled], [data-disabled], [hidden], [aria-hidden], .cursor-not-allowed, .pointer-events-none")
+          .forEach((child) => {
+            clearDisabledState(child);
+            child.removeAttribute?.("hidden");
+            child.removeAttribute?.("aria-hidden");
+            child.style.display = "";
+          });
+        count += 1;
+      });
+    return count;
+  }
+
   function unblockGoalControls() {
     let count = 0;
     Array.from(document.querySelectorAll(selectors.disabledInteractive)).forEach((node) => {
@@ -580,8 +673,9 @@ const unlockerScript = String.raw`
     const entryUnlocked = enablePluginEntry();
     const installUnlocked = unblockPluginInstallButtons();
     const goalControlsUnlocked = unblockGoalControls();
+    const desktopPowerControlsUnlocked = unblockDesktopPowerControls();
     const localView = preferLocalThreadView();
-    return { entryUnlocked, installUnlocked, goalControlsUnlocked, localView };
+    return { entryUnlocked, installUnlocked, goalControlsUnlocked, desktopPowerControlsUnlocked, localView };
   }
 
   window.__codexPlusUnlockerController = { version, tick };
@@ -608,11 +702,14 @@ async function injectAllTargets() {
 
 async function statusSnapshot() {
   const targets = await codexTargets();
+  const config = existsSync(codexConfigPath) ? readFileSync(codexConfigPath, "utf8") : "";
   return {
     codexInstalled: codexInstalled(),
     codexRunning: codexProcessRunning(),
     unlockerRunning: unlockerServiceRunning(),
     goalsEnabled: effectiveFeatureState("goals") === true,
+    preventSleepWhileRunning: /\[desktop\][\s\S]*?preventSleepWhileRunning\s*=\s*true/.test(config),
+    keepRemoteControlAwakeWhilePluggedIn: /\[desktop\][\s\S]*?keepRemoteControlAwakeWhilePluggedIn\s*=\s*true/.test(config),
     debugTargetCount: targets.length,
     logPath,
   };
@@ -630,6 +727,7 @@ async function serviceMain({ oneShot = false } = {}) {
   killLegacyUnlockers();
   log("unlocker_start", { debugPort, codexExecutable });
   const goalFeature = enableGoalFeatureFlag();
+  const desktopPower = enableDesktopPowerSettings();
   let targets = await codexTargets();
   if (codexNeedsRelaunchForUnlock(targets)) {
     if (codexProcessRunning()) {
@@ -650,8 +748,8 @@ async function serviceMain({ oneShot = false } = {}) {
     notify("CodexPlus", "没有检测到 Codex 调试页面。请先完全退出 Codex，再重新打开本工具。");
     log("no_targets_after_launch");
   } else {
-    const message = goalFeature.changed
-      ? "已开启目标模式配置。若 Codex 之前已经打开，请完全退出后重新打开 CodexPlus 让后端生效。"
+    const message = goalFeature.changed || desktopPower.changed
+      ? "已开启目标模式和唤醒配置。若 Codex 之前已经打开，请完全退出后重新打开 CodexPlus 让后端生效。"
       : "已启动，正在保持插件入口和目标模式解锁。";
     notify("CodexPlus", message);
   }
@@ -693,6 +791,11 @@ async function run() {
     return;
   }
 
+  if (command === "enable-desktop-power") {
+    printJson(enableDesktopPowerSettings());
+    return;
+  }
+
   if (command === "launch-codex") {
     launchCodex();
     activateCodex();
@@ -710,10 +813,15 @@ async function run() {
     killLegacyUnlockers();
     killCurrentUnlockerServices();
     const feature = enableGoalFeatureFlag();
+    const desktopPower = enableDesktopPowerSettings();
     spawnService(oneShotServiceArg);
-    log("service_spawned_from_ui", { goalFeatureEnabled: feature.enabled, mode: oneShotServiceArg });
+    log("service_spawned_from_ui", {
+      goalFeatureEnabled: feature.enabled,
+      desktopPowerEnabled: desktopPower.enabled,
+      mode: oneShotServiceArg,
+    });
     activateCodex();
-    printJson({ ok: true, goalsEnabled: feature.enabled, serviceRunning: true });
+    printJson({ ok: true, goalsEnabled: feature.enabled, desktopPowerEnabled: desktopPower.enabled, serviceRunning: true });
     return;
   }
 
