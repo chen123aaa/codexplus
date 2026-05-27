@@ -56,15 +56,7 @@ function codexInstalled() {
 }
 
 function codexProcessRunning() {
-  try {
-    const output = execFileSync("pgrep", ["-f", "/Applications/Codex.app/Contents/MacOS/Codex"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    return output.trim().length > 0;
-  } catch {
-    return false;
-  }
+  return codexMainProcesses().length > 0;
 }
 
 function codexMainProcesses() {
@@ -243,27 +235,48 @@ function effectiveFeatureState(featureName) {
   return null;
 }
 
-function enableGoalFeatureFlag() {
+function enableFeatureFlag(featureName) {
   if (!existsSync(codexCliExecutable)) {
-    log("goal_feature_skipped", { reason: "codex_cli_missing", codexCliExecutable });
+    log("feature_skipped", { featureName, reason: "codex_cli_missing", codexCliExecutable });
     return { enabled: false, changed: false, error: `Codex CLI not found: ${codexCliExecutable}` };
   }
 
   try {
-    const before = effectiveFeatureState("goals");
+    const before = effectiveFeatureState(featureName);
     if (before === true) {
-      log("goal_feature_already_enabled");
+      log("feature_already_enabled", { featureName });
       return { enabled: true, changed: false };
     }
 
-    const output = codexCli(["features", "enable", "goals"]);
-    const after = effectiveFeatureState("goals");
-    log("goal_feature_enable_requested", { before, after, output: output.trim() });
+    const output = codexCli(["features", "enable", featureName]);
+    const after = effectiveFeatureState(featureName);
+    log("feature_enable_requested", { featureName, before, after, output: output.trim() });
     return { enabled: after === true, changed: after === true };
   } catch (error) {
-    log("goal_feature_enable_failed", { error: String(error?.message || error), codexCliExecutable });
+    log("feature_enable_failed", { featureName, error: String(error?.message || error), codexCliExecutable });
     return { enabled: false, changed: false, error: String(error?.message || error) };
   }
+}
+
+function enableCodexFeatureFlags() {
+  const featureNames = [
+    "plugins",
+    "apps",
+    "browser_use",
+    "computer_use",
+    "image_generation",
+    "goals",
+  ];
+  const results = Object.fromEntries(featureNames.map((featureName) => [featureName, enableFeatureFlag(featureName)]));
+  return {
+    enabled: Object.values(results).every((result) => result.enabled),
+    changed: Object.values(results).some((result) => result.changed),
+    results,
+  };
+}
+
+function enableGoalFeatureFlag() {
+  return enableFeatureFlag("goals");
 }
 
 function ensureDesktopSetting(raw, key, value) {
@@ -383,7 +396,7 @@ async function evaluateOnTarget(target, expression) {
 
 const unlockerScript = String.raw`
 (() => {
-  const version = "codexplus-v2";
+  const version = "codexplus-v3";
   const existing = window.__codexPlusUnlockerController;
   if (existing && existing.version === version && typeof existing.tick === "function") {
     return { status: "already-installed", ...existing.tick() };
@@ -521,7 +534,12 @@ const unlockerScript = String.raw`
   }
 
   function isInstallButtonLabel(text) {
-    return /^安装\s*/.test(text) || /^Install\s*/i.test(text) || text === "强制安装";
+    return /^安装\s*/.test(text)
+      || /^添加到\s*Codex$/i.test(text)
+      || /^Install\s*/i.test(text)
+      || /^Add to\s*Codex$/i.test(text)
+      || text === "强制安装"
+      || text === "强制添加";
   }
 
   function pluginInstallCandidates() {
@@ -549,7 +567,10 @@ const unlockerScript = String.raw`
       const node = walker.currentNode;
       if (isInstallButtonLabel((node.nodeValue || "").trim())) textNode = node;
     }
-    if (textNode) textNode.nodeValue = "强制安装";
+    if (textNode) {
+      const current = (textNode.nodeValue || "").trim();
+      textNode.nodeValue = /^Add to/i.test(current) ? "Force Add" : "强制添加";
+    }
   }
 
   function installForcedInstallGuard(button) {
@@ -707,6 +728,11 @@ async function statusSnapshot() {
     codexInstalled: codexInstalled(),
     codexRunning: codexProcessRunning(),
     unlockerRunning: unlockerServiceRunning(),
+    pluginsEnabled: effectiveFeatureState("plugins") === true,
+    appsEnabled: effectiveFeatureState("apps") === true,
+    browserUseEnabled: effectiveFeatureState("browser_use") === true,
+    computerUseEnabled: effectiveFeatureState("computer_use") === true,
+    imageGenerationEnabled: effectiveFeatureState("image_generation") === true,
     goalsEnabled: effectiveFeatureState("goals") === true,
     preventSleepWhileRunning: /\[desktop\][\s\S]*?preventSleepWhileRunning\s*=\s*true/.test(config),
     keepRemoteControlAwakeWhilePluggedIn: /\[desktop\][\s\S]*?keepRemoteControlAwakeWhilePluggedIn\s*=\s*true/.test(config),
@@ -726,7 +752,7 @@ function spawnService(mode = serviceArg) {
 async function serviceMain({ oneShot = false } = {}) {
   killLegacyUnlockers();
   log("unlocker_start", { debugPort, codexExecutable });
-  const goalFeature = enableGoalFeatureFlag();
+  const featureFlags = enableCodexFeatureFlags();
   const desktopPower = enableDesktopPowerSettings();
   let targets = await codexTargets();
   if (codexNeedsRelaunchForUnlock(targets)) {
@@ -748,8 +774,8 @@ async function serviceMain({ oneShot = false } = {}) {
     notify("CodexPlus", "没有检测到 Codex 调试页面。请先完全退出 Codex，再重新打开本工具。");
     log("no_targets_after_launch");
   } else {
-    const message = goalFeature.changed || desktopPower.changed
-      ? "已开启目标模式和唤醒配置。若 Codex 之前已经打开，请完全退出后重新打开 CodexPlus 让后端生效。"
+    const message = featureFlags.changed || desktopPower.changed
+      ? "已开启插件、目标模式和唤醒配置。若 Codex 之前已经打开，请完全退出后重新打开 CodexPlus 让后端生效。"
       : "已启动，正在保持插件入口和目标模式解锁。";
     notify("CodexPlus", message);
   }
@@ -791,6 +817,11 @@ async function run() {
     return;
   }
 
+  if (command === "enable-features") {
+    printJson(enableCodexFeatureFlags());
+    return;
+  }
+
   if (command === "enable-desktop-power") {
     printJson(enableDesktopPowerSettings());
     return;
@@ -812,16 +843,16 @@ async function run() {
   if (command === "start-service") {
     killLegacyUnlockers();
     killCurrentUnlockerServices();
-    const feature = enableGoalFeatureFlag();
+    const featureFlags = enableCodexFeatureFlags();
     const desktopPower = enableDesktopPowerSettings();
     spawnService(oneShotServiceArg);
     log("service_spawned_from_ui", {
-      goalFeatureEnabled: feature.enabled,
+      featureFlagsEnabled: featureFlags.enabled,
       desktopPowerEnabled: desktopPower.enabled,
       mode: oneShotServiceArg,
     });
     activateCodex();
-    printJson({ ok: true, goalsEnabled: feature.enabled, desktopPowerEnabled: desktopPower.enabled, serviceRunning: true });
+    printJson({ ok: true, featureFlagsEnabled: featureFlags.enabled, features: featureFlags.results, desktopPowerEnabled: desktopPower.enabled, serviceRunning: true });
     return;
   }
 

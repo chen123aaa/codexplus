@@ -44,6 +44,8 @@
 
 - 以带调试端口的方式启动 Codex
 - 解锁插件入口和插件安装按钮
+- 兼容新版 `添加到 Codex` / `Add to Codex` 按钮
+- 自动确认 `plugins` / `apps` / `browser_use` / `computer_use` / `image_generation` 等 Codex feature 已开启
 - 开启 `goals` 目标模式
 - 开启运行时防止系统休眠
 - 开启接通电源时远程控制保持唤醒
@@ -80,6 +82,15 @@ open -a /Applications/CodexPlus.app
 ```
 
 它会完成一次性启动和注入，然后自行退出，不长期驻留。
+
+### Codex 更新后的处理
+
+Codex 更新后如果插件入口还在，但安装或添加按钮不听话，通常是两类原因：
+
+- 官方 UI 文案或 DOM 改了，比如新版把 `安装` 改成了 `添加到 Codex`
+- 页面里还留着旧版 CodexPlus 注入脚本，需要提高注入版本号后重新覆盖
+
+当前版本已经把注入脚本更新到 `codexplus-v3`，并兼容 `添加到 Codex` / `Add to Codex`。
 
 ### 唤醒 / 锁屏相关
 
