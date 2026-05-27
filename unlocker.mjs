@@ -396,7 +396,7 @@ async function evaluateOnTarget(target, expression) {
 
 const unlockerScript = String.raw`
 (() => {
-  const version = "codexplus-v3";
+  const version = "codexplus-v4";
   const existing = window.__codexPlusUnlockerController;
   if (existing && existing.version === version && typeof existing.tick === "function") {
     return { status: "already-installed", ...existing.tick() };
@@ -652,6 +652,52 @@ const unlockerScript = String.raw`
     return count;
   }
 
+  function elementText(element) {
+    return [
+      element?.textContent,
+      element?.getAttribute?.("aria-label"),
+      element?.getAttribute?.("title"),
+    ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+  }
+
+  function isPluginSkillDialogClose(element) {
+    const text = elementText(element);
+    return /^(关闭|Close)$/i.test(text) || /^(关闭|Close)$/i.test(element?.getAttribute?.("aria-label") || "");
+  }
+
+  function isPluginSkillCardClick(element) {
+    const target = element?.closest?.("button, [role='button'], [tabindex]");
+    if (!target) return false;
+    const text = elementText(target);
+    if (!/(技能|Skill)/i.test(text)) return false;
+    if (/添加到\s*Codex|Add to\s*Codex|强制添加|Force Add|关闭|Close/i.test(text)) return false;
+    return true;
+  }
+
+  function installPluginSkillDialogGuard() {
+    if (window.__codexPlusPluginSkillDialogGuard === version) return true;
+    window.__codexPlusPluginSkillDialogGuard = version;
+    let lastCloseAt = 0;
+    const guardMs = 900;
+    const guard = (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
+      const closeButton = target.closest("button, [role='button']");
+      if (isPluginSkillDialogClose(closeButton)) {
+        lastCloseAt = Date.now();
+        return;
+      }
+      if (Date.now() - lastCloseAt < guardMs && isPluginSkillCardClick(target)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    };
+    ["pointerdown", "mousedown", "mouseup", "click"].forEach((eventName) => {
+      document.addEventListener(eventName, guard, true);
+    });
+    return true;
+  }
+
   function localModeCandidates() {
     const interactive = Array.from(document.querySelectorAll('button,[role="button"],[role="tab"],a'));
     return interactive.filter((element) => {
@@ -691,12 +737,13 @@ const unlockerScript = String.raw`
   }
 
   function tick() {
+    const pluginSkillDialogGuardInstalled = installPluginSkillDialogGuard();
     const entryUnlocked = enablePluginEntry();
     const installUnlocked = unblockPluginInstallButtons();
     const goalControlsUnlocked = unblockGoalControls();
     const desktopPowerControlsUnlocked = unblockDesktopPowerControls();
     const localView = preferLocalThreadView();
-    return { entryUnlocked, installUnlocked, goalControlsUnlocked, desktopPowerControlsUnlocked, localView };
+    return { entryUnlocked, installUnlocked, goalControlsUnlocked, desktopPowerControlsUnlocked, pluginSkillDialogGuardInstalled, localView };
   }
 
   window.__codexPlusUnlockerController = { version, tick };
