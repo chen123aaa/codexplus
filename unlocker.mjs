@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, execFileSync } from "node:child_process";
-import { mkdirSync, appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, appendFileSync, existsSync, readFileSync, writeFileSync, cpSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,6 +12,8 @@ const nodeExecutable = process.execPath;
 const scriptPath = fileURLToPath(import.meta.url);
 const logPath = join(process.env.HOME || ".", ".codexplus/unlocker.log");
 const codexConfigPath = join(process.env.HOME || ".", ".codex/config.toml");
+const bundledPluginsRoot = join(codexAppPath, "Contents/Resources/plugins/openai-bundled/plugins");
+const bundledPluginCacheRoot = join(process.env.HOME || ".", ".codex/plugins/cache/openai-bundled");
 const forceDebugRelaunch = process.env.CODEXPLUS_FORCE_DEBUG_RELAUNCH === "1";
 const pollMs = 2000;
 const startupTimeoutMs = 30000;
@@ -337,6 +339,80 @@ function enableDesktopPowerSettings() {
     log("desktop_power_settings_failed", { error: String(error?.message || error), codexConfigPath });
     return { enabled: false, changed: false, error: String(error?.message || error), configPath: codexConfigPath };
   }
+}
+
+function bundledPluginManifest(pluginName) {
+  const pluginPath = join(bundledPluginsRoot, pluginName);
+  const manifestPath = join(pluginPath, ".codex-plugin/plugin.json");
+  if (!existsSync(manifestPath)) {
+    return { exists: false, pluginName, pluginPath, manifestPath };
+  }
+
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    return {
+      exists: true,
+      pluginName,
+      pluginPath,
+      manifestPath,
+      version: String(manifest.version || "unknown"),
+      displayName: manifest.interface?.displayName || pluginName,
+    };
+  } catch (error) {
+    return {
+      exists: false,
+      pluginName,
+      pluginPath,
+      manifestPath,
+      error: String(error?.message || error),
+    };
+  }
+}
+
+function syncBundledPlugin(pluginName) {
+  const manifest = bundledPluginManifest(pluginName);
+  if (!manifest.exists) {
+    log("bundled_plugin_missing", manifest);
+    return { ok: false, changed: false, ...manifest };
+  }
+
+  const destination = join(bundledPluginCacheRoot, pluginName, manifest.version);
+  if (existsSync(join(destination, ".codex-plugin/plugin.json"))) {
+    log("bundled_plugin_cache_already_present", { pluginName, version: manifest.version, destination });
+    return { ok: true, changed: false, pluginName, version: manifest.version, destination };
+  }
+
+  try {
+    mkdirSync(dirname(destination), { recursive: true });
+    cpSync(manifest.pluginPath, destination, { recursive: true, force: true, preserveTimestamps: true });
+    log("bundled_plugin_cache_synced", { pluginName, version: manifest.version, destination });
+    return { ok: true, changed: true, pluginName, version: manifest.version, destination };
+  } catch (error) {
+    log("bundled_plugin_cache_sync_failed", {
+      pluginName,
+      version: manifest.version,
+      destination,
+      error: String(error?.message || error),
+    });
+    return {
+      ok: false,
+      changed: false,
+      pluginName,
+      version: manifest.version,
+      destination,
+      error: String(error?.message || error),
+    };
+  }
+}
+
+function syncBundledPlugins() {
+  const pluginNames = ["computer-use"];
+  const results = Object.fromEntries(pluginNames.map((pluginName) => [pluginName, syncBundledPlugin(pluginName)]));
+  return {
+    ok: Object.values(results).every((result) => result.ok),
+    changed: Object.values(results).some((result) => result.changed),
+    results,
+  };
 }
 
 async function waitForTargets() {
@@ -772,6 +848,10 @@ async function injectAllTargets() {
 async function statusSnapshot() {
   const targets = await codexTargets();
   const config = existsSync(codexConfigPath) ? readFileSync(codexConfigPath, "utf8") : "";
+  const computerUseManifest = bundledPluginManifest("computer-use");
+  const computerUseCachePath = computerUseManifest.exists
+    ? join(bundledPluginCacheRoot, "computer-use", computerUseManifest.version, ".codex-plugin/plugin.json")
+    : null;
   return {
     codexInstalled: codexInstalled(),
     codexRunning: codexProcessRunning(),
@@ -782,6 +862,9 @@ async function statusSnapshot() {
     computerUseEnabled: effectiveFeatureState("computer_use") === true,
     imageGenerationEnabled: effectiveFeatureState("image_generation") === true,
     goalsEnabled: effectiveFeatureState("goals") === true,
+    computerUsePluginBundled: computerUseManifest.exists,
+    computerUsePluginVersion: computerUseManifest.version || null,
+    computerUsePluginCached: computerUseCachePath ? existsSync(computerUseCachePath) : false,
     preventSleepWhileRunning: /\[desktop\][\s\S]*?preventSleepWhileRunning\s*=\s*true/.test(config),
     keepRemoteControlAwakeWhilePluggedIn: /\[desktop\][\s\S]*?keepRemoteControlAwakeWhilePluggedIn\s*=\s*true/.test(config),
     debugTargetCount: targets.length,
@@ -802,6 +885,7 @@ async function serviceMain({ oneShot = false } = {}) {
   log("unlocker_start", { debugPort, codexExecutable, forceDebugRelaunch });
   const featureFlags = enableCodexFeatureFlags();
   const desktopPower = enableDesktopPowerSettings();
+  const bundledPlugins = syncBundledPlugins();
   let targets = await codexTargets();
 
   if (!codexProcessRunning()) {
@@ -826,7 +910,7 @@ async function serviceMain({ oneShot = false } = {}) {
     const message = featureFlags.changed || desktopPower.changed
       ? "已开启插件、目标模式和唤醒配置。若 Codex 之前已经打开，请完全退出后重新打开 CodexPlus 让后端生效。"
       : "已启动，正在保持插件入口和目标模式解锁。";
-    notify("CodexPlus", message);
+    notify("CodexPlus", bundledPlugins.changed ? "已恢复内置插件缓存。若列表没刷新，请重新打开 Codex。" : message);
   }
 
   if (oneShot) {
@@ -876,6 +960,11 @@ async function run() {
     return;
   }
 
+  if (command === "sync-bundled-plugins") {
+    printJson(syncBundledPlugins());
+    return;
+  }
+
   if (command === "launch-codex") {
     launchCodex();
     activateCodex();
@@ -894,14 +983,24 @@ async function run() {
     killCurrentUnlockerServices();
     const featureFlags = enableCodexFeatureFlags();
     const desktopPower = enableDesktopPowerSettings();
+    const bundledPlugins = syncBundledPlugins();
     spawnService(oneShotServiceArg);
     log("service_spawned_from_ui", {
       featureFlagsEnabled: featureFlags.enabled,
       desktopPowerEnabled: desktopPower.enabled,
+      bundledPluginsSynced: bundledPlugins.ok,
       mode: oneShotServiceArg,
     });
     activateCodex();
-    printJson({ ok: true, featureFlagsEnabled: featureFlags.enabled, features: featureFlags.results, desktopPowerEnabled: desktopPower.enabled, serviceRunning: true });
+    printJson({
+      ok: true,
+      featureFlagsEnabled: featureFlags.enabled,
+      features: featureFlags.results,
+      desktopPowerEnabled: desktopPower.enabled,
+      bundledPluginsSynced: bundledPlugins.ok,
+      bundledPlugins: bundledPlugins.results,
+      serviceRunning: true,
+    });
     return;
   }
 
