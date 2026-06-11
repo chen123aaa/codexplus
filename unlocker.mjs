@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, execFileSync } from "node:child_process";
-import { mkdirSync, appendFileSync, existsSync, readFileSync, writeFileSync, cpSync, readdirSync } from "node:fs";
+import { mkdirSync, appendFileSync, existsSync, readFileSync, writeFileSync, cpSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -13,7 +13,11 @@ const scriptPath = fileURLToPath(import.meta.url);
 const logPath = join(process.env.HOME || ".", ".codexplus/unlocker.log");
 const codexConfigPath = join(process.env.HOME || ".", ".codex/config.toml");
 const bundledPluginsRoot = join(codexAppPath, "Contents/Resources/plugins/openai-bundled/plugins");
+const bundledMarketplaceSourcePath = join(codexAppPath, "Contents/Resources/plugins/openai-bundled/.agents/plugins/marketplace.json");
 const bundledPluginCacheRoot = join(process.env.HOME || ".", ".codex/plugins/cache/openai-bundled");
+const bundledMarketplaceRoot = join(process.env.HOME || ".", ".codex/.tmp/bundled-marketplaces/openai-bundled");
+const bundledMarketplacePluginsRoot = join(bundledMarketplaceRoot, "plugins");
+const bundledMarketplaceManifestPath = join(bundledMarketplaceRoot, ".agents/plugins/marketplace.json");
 const forceDebugRelaunch = process.env.CODEXPLUS_FORCE_DEBUG_RELAUNCH === "1";
 const pollMs = 2000;
 const startupTimeoutMs = 30000;
@@ -434,6 +438,44 @@ function bundledPluginCacheStatus() {
   return results;
 }
 
+function bundledMarketplaceStatus() {
+  const configuredPlugins = [];
+  try {
+    const manifest = JSON.parse(readFileSync(bundledMarketplaceManifestPath, "utf8"));
+    if (Array.isArray(manifest.plugins)) {
+      configuredPlugins.push(...manifest.plugins.map((plugin) => String(plugin.name || "")).filter(Boolean));
+    }
+  } catch {
+    // Missing or malformed marketplace manifests are repaired during unlock.
+  }
+
+  const pluginNames = bundledPluginNames();
+  return {
+    path: bundledMarketplaceRoot,
+    manifestPath: bundledMarketplaceManifestPath,
+    manifestExists: existsSync(bundledMarketplaceManifestPath),
+    configuredPlugins,
+    expectedPlugins: pluginNames,
+    missingPlugins: pluginNames.filter((pluginName) => !configuredPlugins.includes(pluginName)),
+  };
+}
+
+function bundledPluginConfigStatus() {
+  const config = existsSync(codexConfigPath) ? readFileSync(codexConfigPath, "utf8") : "";
+  const pluginNames = bundledPluginNames();
+  const enabledPlugins = pluginNames.filter((pluginName) => {
+    const escapedHeader = pluginConfigHeader(pluginName).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const section = config.match(new RegExp(`${escapedHeader}[\\s\\S]*?(?=\\n\\s*\\[|$)`))?.[0] || "";
+    return /^\s*enabled\s*=\s*true\s*$/m.test(section);
+  });
+  return {
+    configPath: codexConfigPath,
+    expectedPlugins: pluginNames,
+    enabledPlugins,
+    missingPlugins: pluginNames.filter((pluginName) => !enabledPlugins.includes(pluginName)),
+  };
+}
+
 function syncBundledPlugins() {
   const pluginNames = bundledPluginNames();
   const results = Object.fromEntries(pluginNames.map((pluginName) => [pluginName, syncBundledPlugin(pluginName)]));
@@ -442,6 +484,203 @@ function syncBundledPlugins() {
     changed: Object.values(results).some((result) => result.changed),
     results,
   };
+}
+
+function marketplaceCategoryForPlugin(pluginName) {
+  if (pluginName === "latex") return "Research";
+  if (pluginName === "browser" || pluginName === "chrome" || pluginName === "computer-use") return "Productivity";
+  return "Engineering";
+}
+
+function readPluginVersion(pluginPath) {
+  try {
+    const manifest = JSON.parse(readFileSync(join(pluginPath, ".codex-plugin/plugin.json"), "utf8"));
+    return String(manifest.version || "");
+  } catch {
+    return "";
+  }
+}
+
+function syncBundledMarketplacePlugin(pluginName) {
+  const manifest = bundledPluginManifest(pluginName);
+  if (!manifest.exists) return { ok: false, changed: false, ...manifest };
+
+  const destination = join(bundledMarketplacePluginsRoot, pluginName);
+  const currentVersion = readPluginVersion(destination);
+  if (currentVersion === manifest.version) {
+    log("bundled_marketplace_plugin_already_present", { pluginName, version: manifest.version, destination });
+    return { ok: true, changed: false, pluginName, version: manifest.version, destination };
+  }
+
+  try {
+    rmSync(destination, { recursive: true, force: true });
+    mkdirSync(dirname(destination), { recursive: true });
+    cpSync(manifest.pluginPath, destination, { recursive: true, force: true, preserveTimestamps: true });
+    log("bundled_marketplace_plugin_synced", {
+      pluginName,
+      version: manifest.version,
+      previousVersion: currentVersion || null,
+      destination,
+    });
+    return { ok: true, changed: true, pluginName, version: manifest.version, destination };
+  } catch (error) {
+    log("bundled_marketplace_plugin_sync_failed", {
+      pluginName,
+      version: manifest.version,
+      destination,
+      error: String(error?.message || error),
+    });
+    return {
+      ok: false,
+      changed: false,
+      pluginName,
+      version: manifest.version,
+      destination,
+      error: String(error?.message || error),
+    };
+  }
+}
+
+function syncBundledMarketplace(pluginNames = bundledPluginNames()) {
+  const pluginResults = Object.fromEntries(pluginNames.map((pluginName) => [pluginName, syncBundledMarketplacePlugin(pluginName)]));
+  let marketplace = null;
+  if (existsSync(bundledMarketplaceSourcePath)) {
+    try {
+      marketplace = JSON.parse(readFileSync(bundledMarketplaceSourcePath, "utf8"));
+    } catch (error) {
+      log("bundled_marketplace_source_parse_failed", {
+        bundledMarketplaceSourcePath,
+        error: String(error?.message || error),
+      });
+    }
+  }
+  if (!marketplace || !Array.isArray(marketplace.plugins)) {
+    const plugins = pluginNames.map((pluginName) => ({
+      name: pluginName,
+      source: {
+        source: "local",
+        path: `./plugins/${pluginName}`,
+      },
+      policy: {
+        installation: "AVAILABLE",
+        authentication: "ON_INSTALL",
+      },
+      category: marketplaceCategoryForPlugin(pluginName),
+    }));
+    marketplace = {
+      name: "openai-bundled",
+      interface: {
+        displayName: "OpenAI Bundled",
+      },
+      plugins,
+    };
+  } else {
+    const knownPlugins = new Set(pluginNames);
+    marketplace = {
+      ...marketplace,
+      plugins: marketplace.plugins.filter((plugin) => knownPlugins.has(String(plugin?.name || ""))),
+    };
+  }
+
+  let manifestChanged = true;
+  const manifestText = `${JSON.stringify(marketplace, null, 2)}\n`;
+  try {
+    manifestChanged = !existsSync(bundledMarketplaceManifestPath)
+      || readFileSync(bundledMarketplaceManifestPath, "utf8") !== manifestText;
+    if (manifestChanged) {
+      mkdirSync(dirname(bundledMarketplaceManifestPath), { recursive: true });
+      writeFileSync(bundledMarketplaceManifestPath, manifestText, "utf8");
+      log("bundled_marketplace_manifest_written", { bundledMarketplaceManifestPath, pluginNames });
+    } else {
+      log("bundled_marketplace_manifest_already_current", { bundledMarketplaceManifestPath, pluginNames });
+    }
+  } catch (error) {
+    log("bundled_marketplace_manifest_failed", {
+      bundledMarketplaceManifestPath,
+      error: String(error?.message || error),
+    });
+    return {
+      ok: false,
+      changed: Object.values(pluginResults).some((result) => result.changed),
+      pluginResults,
+      manifestChanged: false,
+      error: String(error?.message || error),
+    };
+  }
+
+  return {
+    ok: Object.values(pluginResults).every((result) => result.ok),
+    changed: manifestChanged || Object.values(pluginResults).some((result) => result.changed),
+    pluginResults,
+    manifestChanged,
+    marketplacePath: bundledMarketplaceRoot,
+    manifestPath: bundledMarketplaceManifestPath,
+  };
+}
+
+function pluginConfigHeader(pluginName) {
+  return `[plugins."${pluginName}@openai-bundled"]`;
+}
+
+function ensurePluginEnabledSetting(raw, pluginName) {
+  const header = pluginConfigHeader(pluginName);
+  const lines = raw.split(/\r?\n/);
+  const sectionStart = lines.findIndex((line) => line.trim() === header);
+
+  if (sectionStart < 0) {
+    const prefix = raw.trimEnd();
+    return `${prefix}${prefix ? "\n\n" : ""}${header}\nenabled = true\n`;
+  }
+
+  let sectionEnd = lines.length;
+  for (let i = sectionStart + 1; i < lines.length; i += 1) {
+    if (/^\s*\[[^\]]+\]\s*(?:#.*)?$/.test(lines[i])) {
+      sectionEnd = i;
+      break;
+    }
+  }
+
+  for (let i = sectionStart + 1; i < sectionEnd; i += 1) {
+    if (/^\s*enabled\s*=/.test(lines[i])) {
+      if (lines[i].trim() === "enabled = true") return raw;
+      lines[i] = "enabled = true";
+      return lines.join("\n");
+    }
+  }
+
+  lines.splice(sectionEnd, 0, "enabled = true");
+  return lines.join("\n");
+}
+
+function ensureBundledPluginsEnabled(pluginNames = bundledPluginNames()) {
+  try {
+    const before = existsSync(codexConfigPath) ? readFileSync(codexConfigPath, "utf8") : "";
+    const after = pluginNames.reduce((config, pluginName) => ensurePluginEnabledSetting(config, pluginName), before);
+    const changed = after !== before;
+    if (changed) {
+      mkdirSync(dirname(codexConfigPath), { recursive: true });
+      writeFileSync(codexConfigPath, after, "utf8");
+    }
+    log("bundled_plugins_config_enabled", { changed, pluginNames, codexConfigPath });
+    return {
+      ok: true,
+      changed,
+      pluginNames,
+      configPath: codexConfigPath,
+    };
+  } catch (error) {
+    log("bundled_plugins_config_enable_failed", {
+      error: String(error?.message || error),
+      codexConfigPath,
+    });
+    return {
+      ok: false,
+      changed: false,
+      pluginNames,
+      configPath: codexConfigPath,
+      error: String(error?.message || error),
+    };
+  }
 }
 
 async function waitForTargets() {
@@ -878,6 +1117,8 @@ async function statusSnapshot() {
   const targets = await codexTargets();
   const config = existsSync(codexConfigPath) ? readFileSync(codexConfigPath, "utf8") : "";
   const bundledPlugins = bundledPluginCacheStatus();
+  const bundledMarketplace = bundledMarketplaceStatus();
+  const bundledPluginConfig = bundledPluginConfigStatus();
   return {
     codexInstalled: codexInstalled(),
     codexRunning: codexProcessRunning(),
@@ -891,6 +1132,11 @@ async function statusSnapshot() {
     bundledPlugins,
     bundledPluginCount: Object.keys(bundledPlugins).length,
     bundledPluginCachedCount: Object.values(bundledPlugins).filter((plugin) => plugin.cached).length,
+    bundledMarketplace,
+    bundledMarketplaceMissingCount: bundledMarketplace.missingPlugins.length,
+    bundledPluginConfig,
+    bundledPluginConfigMissingCount: bundledPluginConfig.missingPlugins.length,
+    bundledPluginEnabledCount: bundledPluginConfig.enabledPlugins.length,
     preventSleepWhileRunning: /\[desktop\][\s\S]*?preventSleepWhileRunning\s*=\s*true/.test(config),
     keepRemoteControlAwakeWhilePluggedIn: /\[desktop\][\s\S]*?keepRemoteControlAwakeWhilePluggedIn\s*=\s*true/.test(config),
     debugTargetCount: targets.length,
@@ -912,6 +1158,8 @@ async function serviceMain({ oneShot = false } = {}) {
   const featureFlags = enableCodexFeatureFlags();
   const desktopPower = enableDesktopPowerSettings();
   const bundledPlugins = syncBundledPlugins();
+  const bundledMarketplace = syncBundledMarketplace();
+  const bundledPluginConfig = ensureBundledPluginsEnabled();
   let targets = await codexTargets();
 
   if (!codexProcessRunning()) {
@@ -933,10 +1181,11 @@ async function serviceMain({ oneShot = false } = {}) {
     notify("CodexPlus", "已打开 Codex。当前未检测到调试页面，已跳过前端注入，避免影响新版 Codex 启动。");
     log("no_targets_after_launch", { safeMode: !forceDebugRelaunch });
   } else {
-    const message = featureFlags.changed || desktopPower.changed
-      ? "已开启插件、目标模式和唤醒配置。若 Codex 之前已经打开，请完全退出后重新打开 CodexPlus 让后端生效。"
+    const unlockStateChanged = featureFlags.changed || desktopPower.changed || bundledMarketplace.changed || bundledPluginConfig.changed;
+    const message = unlockStateChanged
+      ? "已开启插件、目标模式、唤醒配置和官方插件列表。若 Codex 之前已经打开，请完全退出后重新打开 CodexPlus 让后端生效。"
       : "已启动，正在保持插件入口和目标模式解锁。";
-    notify("CodexPlus", bundledPlugins.changed ? "已恢复内置插件缓存。若列表没刷新，请重新打开 Codex。" : message);
+    notify("CodexPlus", bundledPlugins.changed ? "已恢复内置插件缓存和官方插件列表。若列表没刷新，请重新打开 Codex。" : message);
   }
 
   if (oneShot) {
@@ -987,7 +1236,26 @@ async function run() {
   }
 
   if (command === "sync-bundled-plugins") {
-    printJson(syncBundledPlugins());
+    const bundledPlugins = syncBundledPlugins();
+    const bundledMarketplace = syncBundledMarketplace();
+    const bundledPluginConfig = ensureBundledPluginsEnabled();
+    printJson({
+      ok: bundledPlugins.ok && bundledMarketplace.ok && bundledPluginConfig.ok,
+      changed: bundledPlugins.changed || bundledMarketplace.changed || bundledPluginConfig.changed,
+      bundledPlugins,
+      bundledMarketplace,
+      bundledPluginConfig,
+    });
+    return;
+  }
+
+  if (command === "sync-bundled-marketplace") {
+    printJson(syncBundledMarketplace());
+    return;
+  }
+
+  if (command === "enable-bundled-plugins") {
+    printJson(ensureBundledPluginsEnabled());
     return;
   }
 
@@ -1010,11 +1278,15 @@ async function run() {
     const featureFlags = enableCodexFeatureFlags();
     const desktopPower = enableDesktopPowerSettings();
     const bundledPlugins = syncBundledPlugins();
+    const bundledMarketplace = syncBundledMarketplace();
+    const bundledPluginConfig = ensureBundledPluginsEnabled();
     spawnService(oneShotServiceArg);
     log("service_spawned_from_ui", {
       featureFlagsEnabled: featureFlags.enabled,
       desktopPowerEnabled: desktopPower.enabled,
       bundledPluginsSynced: bundledPlugins.ok,
+      bundledMarketplaceSynced: bundledMarketplace.ok,
+      bundledPluginConfigEnabled: bundledPluginConfig.ok,
       mode: oneShotServiceArg,
     });
     activateCodex();
@@ -1025,6 +1297,10 @@ async function run() {
       desktopPowerEnabled: desktopPower.enabled,
       bundledPluginsSynced: bundledPlugins.ok,
       bundledPlugins: bundledPlugins.results,
+      bundledMarketplaceSynced: bundledMarketplace.ok,
+      bundledMarketplace,
+      bundledPluginConfigEnabled: bundledPluginConfig.ok,
+      bundledPluginConfig,
       serviceRunning: true,
     });
     return;
