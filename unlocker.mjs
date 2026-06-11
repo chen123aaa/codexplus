@@ -12,6 +12,7 @@ const nodeExecutable = process.execPath;
 const scriptPath = fileURLToPath(import.meta.url);
 const logPath = join(process.env.HOME || ".", ".codexplus/unlocker.log");
 const codexConfigPath = join(process.env.HOME || ".", ".codex/config.toml");
+const forceDebugRelaunch = process.env.CODEXPLUS_FORCE_DEBUG_RELAUNCH === "1";
 const pollMs = 2000;
 const startupTimeoutMs = 30000;
 const serviceArg = "service";
@@ -798,28 +799,29 @@ function spawnService(mode = serviceArg) {
 
 async function serviceMain({ oneShot = false } = {}) {
   killLegacyUnlockers();
-  log("unlocker_start", { debugPort, codexExecutable });
+  log("unlocker_start", { debugPort, codexExecutable, forceDebugRelaunch });
   const featureFlags = enableCodexFeatureFlags();
   const desktopPower = enableDesktopPowerSettings();
   let targets = await codexTargets();
-  if (codexNeedsRelaunchForUnlock(targets)) {
-    if (codexProcessRunning()) {
-      log("codex_restart_needed_for_clean_unlock_mode", {
-        targets: targets.length,
-        processes: codexMainProcesses(),
-      });
-      notify("CodexPlus", "检测到当前 Codex 不是单一解锁实例，正在自动重启到插件解锁模式。");
-      await restartCodexInUnlockMode();
-    } else {
-      launchCodex();
-    }
+
+  if (!codexProcessRunning()) {
+    activateCodex();
+    log("codex_open_requested_safe_mode");
+  } else if (forceDebugRelaunch && codexNeedsRelaunchForUnlock(targets)) {
+    log("codex_restart_needed_for_clean_unlock_mode", {
+      targets: targets.length,
+      processes: codexMainProcesses(),
+    });
+    notify("CodexPlus", "检测到当前 Codex 不是单一解锁实例，正在自动重启到插件解锁模式。");
+    await restartCodexInUnlockMode();
     targets = await waitForTargets();
   }
+
   activateCodex();
 
   if (!targets.length) {
-    notify("CodexPlus", "没有检测到 Codex 调试页面。请先完全退出 Codex，再重新打开本工具。");
-    log("no_targets_after_launch");
+    notify("CodexPlus", "已打开 Codex。当前未检测到调试页面，已跳过前端注入，避免影响新版 Codex 启动。");
+    log("no_targets_after_launch", { safeMode: !forceDebugRelaunch });
   } else {
     const message = featureFlags.changed || desktopPower.changed
       ? "已开启插件、目标模式和唤醒配置。若 Codex 之前已经打开，请完全退出后重新打开 CodexPlus 让后端生效。"

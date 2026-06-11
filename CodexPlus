@@ -2,13 +2,27 @@
 set -eu
 
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-NODE="/Applications/Codex.app/Contents/Resources/node"
+NODE=""
 
-if [ ! -x "$NODE" ]; then
+for candidate in \
+  "/Applications/Codex.app/Contents/Resources/cua_node/bin/node" \
+  "/Applications/Codex.app/Contents/Resources/node" \
+  "/opt/homebrew/bin/node" \
+  "/usr/local/bin/node"
+do
+  if [ -x "$candidate" ]; then
+    NODE="$candidate"
+    break
+  fi
+done
+
+if [ -z "$NODE" ]; then
   NODE="$(command -v node || true)"
 fi
 
 if [ -z "$NODE" ] || [ ! -x "$NODE" ]; then
+  mkdir -p "$HOME/.codexplus"
+  printf '%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ') CodexPlus failed: node runtime not found" >> "$HOME/.codexplus/unlocker.log"
   exit 1
 fi
 
