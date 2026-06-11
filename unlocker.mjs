@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, execFileSync } from "node:child_process";
-import { mkdirSync, appendFileSync, existsSync, readFileSync, writeFileSync, cpSync } from "node:fs";
+import { mkdirSync, appendFileSync, existsSync, readFileSync, writeFileSync, cpSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -341,8 +341,7 @@ function enableDesktopPowerSettings() {
   }
 }
 
-function bundledPluginManifest(pluginName) {
-  const pluginPath = join(bundledPluginsRoot, pluginName);
+function bundledPluginManifest(pluginName, pluginPath = join(bundledPluginsRoot, pluginName)) {
   const manifestPath = join(pluginPath, ".codex-plugin/plugin.json");
   if (!existsSync(manifestPath)) {
     return { exists: false, pluginName, pluginPath, manifestPath };
@@ -405,8 +404,38 @@ function syncBundledPlugin(pluginName) {
   }
 }
 
+function bundledPluginNames() {
+  if (!existsSync(bundledPluginsRoot)) return [];
+  try {
+    return readdirSync(bundledPluginsRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .filter((pluginName) => bundledPluginManifest(pluginName).exists)
+      .sort((a, b) => a.localeCompare(b));
+  } catch (error) {
+    log("bundled_plugin_scan_failed", { bundledPluginsRoot, error: String(error?.message || error) });
+    return [];
+  }
+}
+
+function bundledPluginCacheStatus() {
+  const results = {};
+  for (const pluginName of bundledPluginNames()) {
+    const manifest = bundledPluginManifest(pluginName);
+    const destination = join(bundledPluginCacheRoot, pluginName, manifest.version);
+    results[pluginName] = {
+      bundled: true,
+      cached: existsSync(join(destination, ".codex-plugin/plugin.json")),
+      version: manifest.version,
+      displayName: manifest.displayName,
+      destination,
+    };
+  }
+  return results;
+}
+
 function syncBundledPlugins() {
-  const pluginNames = ["computer-use"];
+  const pluginNames = bundledPluginNames();
   const results = Object.fromEntries(pluginNames.map((pluginName) => [pluginName, syncBundledPlugin(pluginName)]));
   return {
     ok: Object.values(results).every((result) => result.ok),
@@ -848,10 +877,7 @@ async function injectAllTargets() {
 async function statusSnapshot() {
   const targets = await codexTargets();
   const config = existsSync(codexConfigPath) ? readFileSync(codexConfigPath, "utf8") : "";
-  const computerUseManifest = bundledPluginManifest("computer-use");
-  const computerUseCachePath = computerUseManifest.exists
-    ? join(bundledPluginCacheRoot, "computer-use", computerUseManifest.version, ".codex-plugin/plugin.json")
-    : null;
+  const bundledPlugins = bundledPluginCacheStatus();
   return {
     codexInstalled: codexInstalled(),
     codexRunning: codexProcessRunning(),
@@ -862,9 +888,9 @@ async function statusSnapshot() {
     computerUseEnabled: effectiveFeatureState("computer_use") === true,
     imageGenerationEnabled: effectiveFeatureState("image_generation") === true,
     goalsEnabled: effectiveFeatureState("goals") === true,
-    computerUsePluginBundled: computerUseManifest.exists,
-    computerUsePluginVersion: computerUseManifest.version || null,
-    computerUsePluginCached: computerUseCachePath ? existsSync(computerUseCachePath) : false,
+    bundledPlugins,
+    bundledPluginCount: Object.keys(bundledPlugins).length,
+    bundledPluginCachedCount: Object.values(bundledPlugins).filter((plugin) => plugin.cached).length,
     preventSleepWhileRunning: /\[desktop\][\s\S]*?preventSleepWhileRunning\s*=\s*true/.test(config),
     keepRemoteControlAwakeWhilePluggedIn: /\[desktop\][\s\S]*?keepRemoteControlAwakeWhilePluggedIn\s*=\s*true/.test(config),
     debugTargetCount: targets.length,

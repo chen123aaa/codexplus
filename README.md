@@ -46,7 +46,7 @@
 - 解锁插件入口和插件安装按钮
 - 兼容新版 `添加到 Codex` / `Add to Codex` 按钮
 - 自动确认 `plugins` / `apps` / `browser_use` / `computer_use` / `image_generation` 等 Codex feature 已开启
-- 自动恢复新版 Codex 包内置的 `computer-use` 插件缓存
+- 自动恢复新版 Codex 包内置的 bundled 插件缓存
 - 开启 `goals` 目标模式
 - 开启运行时防止系统休眠
 - 开启接通电源时远程控制保持唤醒
@@ -109,16 +109,16 @@ CodexPlus 已经兼容这个新路径。
 
 另外，新版 Codex 启动链变化比较大。CodexPlus 默认不再强制杀掉并重启 Codex 到调试端口模式，而是先打开官方 Codex、开启本地 feature 配置；如果当前 Codex 已经有调试页面，才做前端注入。
 
-新版 Codex 更新后，`Computer Use` 有时还在官方包里，但用户目录的插件缓存会只剩 `browser`。CodexPlus 会把官方包里的：
+新版 Codex 更新后，有些官方 bundled 插件还在官方包里，但用户目录的插件缓存可能只剩一部分。CodexPlus 会扫描官方包里的：
 
 ```text
-/Applications/Codex.app/Contents/Resources/plugins/openai-bundled/plugins/computer-use
+/Applications/Codex.app/Contents/Resources/plugins/openai-bundled/plugins/
 ```
 
-同步到：
+并按插件版本同步到：
 
 ```text
-~/.codex/plugins/cache/openai-bundled/computer-use/<version>
+~/.codex/plugins/cache/openai-bundled/<plugin>/<version>
 ```
 
 这样插件列表重新加载后就能恢复。
